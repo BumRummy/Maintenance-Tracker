@@ -1,0 +1,54 @@
+#!/bin/bash
+# setup.sh - Setup script for Maintenance Tracker
+
+set -e  # Exit on error
+
+echo "========================================="
+echo "Maintenance Tracker Setup"
+echo "========================================="
+
+# Check Python
+if ! command -v python3 &> /dev/null; then
+    echo "Installing Python3..."
+    sudo apt update
+    sudo apt install python3 python3-venv -y
+fi
+
+# Create and activate virtual environment
+echo "Creating virtual environment..."
+python3 -m venv venv
+
+echo "Activating virtual environment..."
+source venv/bin/activate
+
+# Upgrade pip
+echo "Upgrading pip..."
+pip install --upgrade pip
+
+# Install basic dependencies first
+echo "Installing core dependencies..."
+pip install pandas openpyxl schedule python-dateutil pytz imapclient
+
+# Try to install pyzmail6 instead of pyzmail
+echo "Installing email handling libraries..."
+pip install pyzmail6 || {
+    echo "pyzmail6 failed, trying without it..."
+    # Continue without pyzmail
+}
+
+# Create necessary directories
+echo "Creating necessary directories..."
+mkdir -p logs
+
+echo ""
+echo "========================================="
+echo "Setup Complete!"
+echo "========================================="
+echo ""
+echo "To run the application:"
+echo "1. Activate virtual environment: source venv/bin/activate"
+echo "2. Run: python main.py"
+echo ""
+echo "Or use the provided run script: ./run.sh"
+echo ""
+echo "First run will show configuration window."

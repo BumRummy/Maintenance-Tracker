@@ -1,0 +1,25 @@
+{
+    "email": {
+        "imap_server": "secure.emailsrvr.com",
+        "imap_port": 993,
+        "smtp_server": "secure.emailsrvr.com",
+        "smtp_port": 465,
+        "use_tls": false,
+        "email_address": "dysond@hcbmi.net",
+        "password": "0210dDkD!",
+        "check_interval": 30
+    },
+    "spreadsheet": {
+        "sheet_name": "Weekly_Maintenance_Report"
+    },
+    "notification": {
+        "weekly_report_email": "ppayne@bmihospitality.com",
+        "cc_emails": "ppayne@bmihospitality.com, mlarock@bmihospitality.com, kcrummer@hcbmi.net, mnelson@hcbmi.net, jlong@hcbmi.net, mkiphart@hcbmi.net, rharden@hcbmi.net",
+        "send_day": "monday",
+        "send_time": "09:00"
+    },
+    "kiosk": {
+        "password": "FtB0310!",
+        "fullscreen": true
+    }
+}
