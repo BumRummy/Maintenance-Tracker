@@ -1,0 +1,9 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Maintenance Tracker Forum</h1>
+<p>You are logged in as <strong>{{ session.get('forum_username', 'forum user') }}</strong>.</p>
+<p>Assigned properties: {{ assigned_property_names|join(', ') or 'None' }}</p>
+<form method="post" action="{{ url_for('forum_logout') }}">
+  <button type="submit">Logout</button>
+</form>
+{% endblock %}
