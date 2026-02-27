@@ -31,18 +31,22 @@
         <th>Job</th>
         <th>Room</th>
         <th>Issue</th>
-        <th>Completed By</th>
+        <th>Created At</th>
+        <th>Resolution</th>
         <th>Completed At</th>
+        <th>Completed By</th>
       </tr>
     </thead>
     <tbody>
       {% for job in recent_logs %}
       <tr>
         <td>#{{ job.job_number }}</td>
-        <td>{{ job.room_number }}</td>
+        <td>{{ job.room }}</td>
         <td>{{ job.issue }}</td>
+        <td>{{ job.created_at_display }}</td>
+        <td>{{ job.resolution or '' }}</td>
+        <td>{{ job.completed_at_display }}</td>
         <td>{{ job.completed_by or 'Unknown' }}</td>
-        <td>{{ job.completion_time or '' }}</td>
       </tr>
       {% endfor %}
     </tbody>

@@ -47,6 +47,27 @@ def to_int(value, default: int) -> int:
         return default
 
 
+def format_display_datetime(value: str | None) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return ""
+    return parsed.strftime("%d%b%y %H:%M").upper()
+
+
+def prepare_recent_logs(logs: list[dict]) -> list[dict]:
+    formatted_logs = []
+    for job in logs:
+        row = deepcopy(job)
+        row["room"] = row.get("location") or row.get("room_number") or ""
+        row["created_at_display"] = format_display_datetime(row.get("created_time"))
+        row["completed_at_display"] = format_display_datetime(row.get("completion_time"))
+        formatted_logs.append(row)
+    return formatted_logs
+
+
 class SettingsStore:
     def __init__(self, config_dir: str):
         self.config_dir = Path(config_dir)
@@ -279,7 +300,7 @@ def create_app() -> Flask:
                 "forum_home.html",
                 assigned_property_names=assigned_property_names,
                 open_jobs=jobs_store.get_open_jobs(),
-                recent_logs=jobs_store.get_recent_logs(days=14),
+                recent_logs=prepare_recent_logs(jobs_store.get_recent_logs(days=14)),
             )
         return redirect(url_for("frontdesk_login"))
 
@@ -322,7 +343,7 @@ def create_app() -> Flask:
         )
         jobs_store = app.config["JOBS_STORE"]
         open_jobs = jobs_store.get_open_jobs()
-        recent_logs = jobs_store.get_recent_logs(days=14)
+        recent_logs = prepare_recent_logs(jobs_store.get_recent_logs(days=14))
         return render_template(
             "frontdesk_home.html",
             assigned_property_names=assigned_property_names,
