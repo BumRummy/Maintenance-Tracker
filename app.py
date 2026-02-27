@@ -320,11 +320,14 @@ def create_app() -> Flask:
         assigned_property_names = property_names_for_ids(
             settings["properties"], session.get("frontdesk_properties", [])
         )
-        open_jobs = app.config["JOBS_STORE"].get_open_jobs()
+        jobs_store = app.config["JOBS_STORE"]
+        open_jobs = jobs_store.get_open_jobs()
+        recent_logs = jobs_store.get_recent_logs(days=14)
         return render_template(
             "frontdesk_home.html",
             assigned_property_names=assigned_property_names,
             open_jobs=open_jobs,
+            recent_logs=recent_logs,
         )
 
     @app.post("/frontdesk/jobs/new")

@@ -37,6 +37,36 @@
   {% endif %}
 </div>
 
+<div class="card" id="logs">
+  <h2>Job History (Last 2 Weeks)</h2>
+  {% if recent_logs %}
+  <table class="jobs-table">
+    <thead>
+      <tr>
+        <th>Job</th>
+        <th>Location</th>
+        <th>Issue</th>
+        <th>Completed By</th>
+        <th>Completed At</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in recent_logs %}
+      <tr>
+        <td>#{{ job.job_number }}</td>
+        <td>{{ job.location or job.room_number }}</td>
+        <td>{{ job.issue }}</td>
+        <td>{{ job.completed_by or 'Unknown' }}</td>
+        <td>{{ job.completion_time or '' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No completed jobs in the last 2 weeks.</p>
+  {% endif %}
+</div>
+
 <form method="post" action="{{ url_for('frontdesk_logout') }}">
   <button type="submit">Front Desk Logout</button>
 </form>
