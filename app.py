@@ -500,14 +500,27 @@ def create_app() -> Flask:
 
     @app.route("/admin/login", methods=["GET", "POST"])
     def admin_login():
+        store = app.config["SETTINGS_STORE"]
+        settings_data = store.load()
+
         if request.method == "POST":
+            action = request.form.get("action", "login")
+            if action == "add_room" and session.get("admin_authenticated"):
+                property_id = request.form.get("room_property_id", "").strip()
+                room_name = normalize_room(request.form.get("new_room_name", ""))
+                if store.add_room(property_id, room_name):
+                    flash("Room added.", "success")
+                else:
+                    flash("Could not add room.", "error")
+                return redirect(url_for("admin_login"))
+
             username = request.form.get("username", "")
             password = request.form.get("password", "")
             if username == app.config["ADMIN_USERNAME"] and password == app.config["ADMIN_PASSWORD"]:
                 session["admin_authenticated"] = True
-                return redirect(url_for("settings"))
+                return redirect(url_for("admin_login"))
             flash("Invalid admin credentials.", "error")
-        return render_template("admin_login.html")
+        return render_template("admin_login.html", settings=settings_data)
 
     @app.post("/admin/logout")
     def admin_logout():

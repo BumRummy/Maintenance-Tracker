@@ -1,10 +1,32 @@
 {% extends 'base.html' %}
 {% block content %}
 <h1>Admin Login</h1>
+
+{% if session.get('admin_authenticated') %}
+<section class="card">
+  <h2>Quick Add Room by Location</h2>
+  <form method="post" class="inline-form">
+    <input type="hidden" name="action" value="add_room">
+    <label>Location
+      <select name="room_property_id" required>
+        {% for property in settings.properties %}
+        <option value="{{ property.id }}">{{ property.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Room Number <input name="new_room_name" required></label>
+    <button type="submit">Add Room</button>
+  </form>
+  <p><a href="{{ url_for('settings') }}">Open full admin settings</a></p>
+</section>
+{% else %}
 <form method="post" class="card">
+  <input type="hidden" name="action" value="login">
   <label>Admin Username <input name="username" required></label>
   <label>Admin Password <input type="password" name="password" required></label>
   <button type="submit">Sign in</button>
 </form>
+{% endif %}
+
 <p><a href="{{ url_for('forum_login') }}">Back to forum login</a></p>
 {% endblock %}
