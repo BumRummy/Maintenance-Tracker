@@ -1,0 +1,86 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Front Desk</h1>
+<p>You are logged in as <strong>{{ session.get('frontdesk_username', 'front desk') }}</strong>.</p>
+<p>Assigned properties: {{ assigned_property_names|join(', ') or 'None' }}</p>
+
+<div class="card">
+  <h2>New Maintenance Request</h2>
+  <form method="post" action="{{ url_for('frontdesk_create_job') }}" class="settings-grid">
+    <label>Location
+      <select name="property_id" required>
+        <option value="">Select location</option>
+        {% for property in assigned_properties %}
+        <option value="{{ property.id }}">{{ property.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Room <input name="room_number" required></label>
+    <label>Issue <input name="issue" required></label>
+    <button type="submit">Create Request</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2>Currently Open Jobs</h2>
+  {% if open_jobs %}
+  <table class="jobs-table">
+    <thead>
+      <tr><th>Job</th><th>Location</th><th>Room</th><th>Issue</th><th>Status</th><th>Created By</th></tr>
+    </thead>
+    <tbody>
+      {% for job in open_jobs %}
+      <tr>
+        <td>#{{ job.job_number }}</td>
+        <td>{{ property_name_by_id.get(job.property_id, job.property_id) }}</td>
+        <td>{{ job.room_number }}</td>
+        <td>{{ job.issue }}</td>
+        <td>{{ job.status }}</td>
+        <td>{{ job.created_by or 'Unknown' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No open jobs.</p>
+  {% endif %}
+</div>
+
+<div class="card" id="logs">
+  <h2>Job History (Last 2 Weeks)</h2>
+  {% if recent_logs %}
+  <table class="jobs-table">
+    <thead>
+      <tr>
+        <th>Job</th>
+        <th>Room</th>
+        <th>Issue</th>
+        <th>Created At</th>
+        <th>Resolution</th>
+        <th>Completed At</th>
+        <th>Completed By</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in recent_logs %}
+      <tr>
+        <td>#{{ job.job_number }}</td>
+        <td>{{ job.room }}</td>
+        <td>{{ job.issue }}</td>
+        <td>{{ job.created_at_display }}</td>
+        <td>{{ job.resolution or '' }}</td>
+        <td>{{ job.completed_at_display }}</td>
+        <td>{{ job.completed_by or 'Unknown' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No completed jobs in the last 2 weeks.</p>
+  {% endif %}
+</div>
+
+<form method="post" action="{{ url_for('frontdesk_logout') }}">
+  <button type="submit">Front Desk Logout</button>
+</form>
+{% endblock %}

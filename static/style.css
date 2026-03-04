@@ -1,0 +1,78 @@
+body {
+  font-family: Arial, sans-serif;
+  background: linear-gradient(180deg, #dff1ff 0%, #eef7ff 55%, #f7fbff 100%);
+  margin: 0;
+  color: #1f3b57;
+}
+.container { max-width: 960px; margin: 2rem auto; padding: 1rem; }
+.card {
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(2px);
+  border: 1px solid rgba(148, 187, 233, 0.45);
+  padding: 1rem;
+  border-radius: 14px;
+  display: grid;
+  gap: .75rem;
+  margin-bottom: 1rem;
+  box-shadow: 0 6px 18px rgba(91, 146, 208, 0.14);
+}
+.settings-grid h2 { margin: 1rem 0 0.25rem; }
+label { display: grid; gap: .35rem; font-size: 0.95rem; }
+input, button {
+  padding: .6rem .7rem;
+  font-size: 1rem;
+  border-radius: 12px;
+}
+input {
+  background: rgba(255, 255, 255, 0.72);
+  border: 1px solid rgba(125, 168, 213, 0.6);
+  color: #153250;
+}
+input:focus {
+  outline: none;
+  border-color: #5aa3ec;
+  box-shadow: 0 0 0 3px rgba(90, 163, 236, 0.2);
+}
+button {
+  width: fit-content;
+  cursor: pointer;
+  border: 1px solid #4d8fd4;
+  background: #5aa3ec;
+  color: #fff;
+}
+button:hover { background: #4c93da; }
+.button-link {
+  display: inline-block;
+  text-decoration: none;
+  border: 1px solid #4d8fd4;
+  background: #5aa3ec;
+  color: #fff;
+  border-radius: 12px;
+  padding: .6rem .85rem;
+}
+.button-link:hover { background: #4c93da; }
+.flash { margin-bottom: .75rem; padding: .6rem .8rem; border-radius: 10px; }
+.flash.error { background: rgba(255, 230, 230, 0.9); }
+.flash.success { background: rgba(226, 248, 229, 0.9); }
+.inline-form { display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; }
+.group-block {
+  border: 1px solid rgba(145, 179, 215, 0.6);
+  border-radius: 12px;
+  padding: .8rem;
+  display: grid;
+  gap: .6rem;
+  background: rgba(255, 255, 255, 0.62);
+}
+.checkbox-label { display: flex; align-items: center; gap: .5rem; }
+fieldset { border: 1px solid rgba(145, 179, 215, 0.7); border-radius: 10px; padding: .75rem; }
+.job-card {
+  border: 1px solid rgba(145, 179, 215, 0.65);
+  border-radius: 12px;
+  padding: .8rem;
+  display: grid;
+  gap: .6rem;
+  background: rgba(255, 255, 255, 0.62);
+}
+.jobs-table { width: 100%; border-collapse: collapse; background: rgba(255, 255, 255, 0.72); border-radius: 10px; overflow: hidden; }
+.jobs-table th, .jobs-table td { border: 1px solid rgba(145, 179, 215, 0.5); padding: .55rem; text-align: left; vertical-align: top; }
+.jobs-table th { background: rgba(210, 231, 252, 0.8); }

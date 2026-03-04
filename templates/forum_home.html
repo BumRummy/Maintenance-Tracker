@@ -1,0 +1,68 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>{{ property_data.name }} Maintenance</h1>
+<p>You are logged in as <strong>{{ session.get('forum_username', 'forum user') }}</strong>.</p>
+<p>Assigned properties: {{ assigned_property_names|join(', ') or 'None' }}</p>
+<p>
+  <a class="button-link" href="{{ url_for('forum_location_history', location=property_data.id) }}">
+    View Maintenance History
+  </a>
+</p>
+
+<div class="card">
+  <h2>Open Jobs</h2>
+  {% if open_jobs %}
+    {% for job in open_jobs %}
+    <div class="job-card">
+      <div><strong>#{{ job.job_number }}</strong> — Room {{ job.room_number }}</div>
+      <div>{{ job.issue }}</div>
+      <form method="post" action="{{ url_for('complete_job', job_number=job.job_number) }}" class="inline-form">
+        <input type="hidden" name="location" value="{{ property_data.id }}">
+        <label>Resolution <input name="resolution" placeholder="How was it fixed?"></label>
+        <button type="submit">Mark Complete</button>
+      </form>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p>No open jobs.</p>
+  {% endif %}
+</div>
+
+<div class="card" id="logs">
+  <h2>Logs (Last 2 Weeks)</h2>
+  {% if recent_logs %}
+  <table class="jobs-table">
+    <thead>
+      <tr>
+        <th>Job</th>
+        <th>Room</th>
+        <th>Issue</th>
+        <th>Created At</th>
+        <th>Resolution</th>
+        <th>Completed At</th>
+        <th>Completed By</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in recent_logs %}
+      <tr>
+        <td>#{{ job.job_number }}</td>
+        <td>{{ job.room }}</td>
+        <td>{{ job.issue }}</td>
+        <td>{{ job.created_at_display }}</td>
+        <td>{{ job.resolution or '' }}</td>
+        <td>{{ job.completed_at_display }}</td>
+        <td>{{ job.completed_by or 'Unknown' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+    <p>No completed jobs in the last 2 weeks.</p>
+  {% endif %}
+</div>
+
+<form method="post" action="{{ url_for('forum_logout') }}">
+  <button type="submit">Logout</button>
+</form>
+{% endblock %}

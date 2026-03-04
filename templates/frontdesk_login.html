@@ -1,0 +1,10 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Front Desk Login</h1>
+<form method="post" class="card">
+  <label>Username <input name="username" required></label>
+  <label>Password <input type="password" name="password" required></label>
+  <button type="submit">Sign In</button>
+</form>
+<p><a href="{{ url_for('forum_login') }}">Maintenance login</a></p>
+{% endblock %}

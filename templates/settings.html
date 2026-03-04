@@ -1,0 +1,102 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Admin Settings</h1>
+<p>Admin login and web host/port values are controlled by environment variables and are intentionally not editable here.</p>
+
+<section class="card">
+  <h2>Add Maintenance User</h2>
+  <form method="post" class="inline-form">
+    <input type="hidden" name="action" value="add_user">
+    <label>Username <input name="new_username" required></label>
+    <label>Password <input type="password" name="new_password" required></label>
+    <button type="submit">Add User</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Add Front Desk User</h2>
+  <form method="post" class="inline-form">
+    <input type="hidden" name="action" value="add_frontdesk_user">
+    <label>Username <input name="new_frontdesk_username" required></label>
+    <label>Password <input type="password" name="new_frontdesk_password" required></label>
+    <button type="submit">Add Front Desk User</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Add Property</h2>
+  <form method="post" class="inline-form">
+    <input type="hidden" name="action" value="add_property">
+    <label>Property Name <input name="new_property_name" required></label>
+    <button type="submit">Add Property</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Add Room</h2>
+  <form method="post" class="inline-form">
+    <input type="hidden" name="action" value="add_room">
+    <label>Property
+      <select name="room_property_id" required>
+        {% for property in settings.properties %}
+        <option value="{{ property.id }}">{{ property.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Room Number <input name="new_room_name" required></label>
+    <button type="submit">Add Room</button>
+  </form>
+</section>
+
+<form method="post" class="card settings-grid">
+  <input type="hidden" name="action" value="save">
+
+  <h2>Maintenance Users</h2>
+  {% for user in settings.users %}
+  {% set user_index = loop.index0 %}
+  <div class="group-block">
+    <label>Username <input name="user_{{ user_index }}_username" value="{{ user.username }}" required></label>
+    <label>Password <input type="password" name="user_{{ user_index }}_password" value="{{ user.password }}" required></label>
+    <fieldset>
+      <legend>Assigned Properties</legend>
+      {% for property in settings.properties %}
+      <label class="checkbox-label"><input type="checkbox" name="user_{{ user_index }}_properties" value="{{ property.id }}" {% if property.id in user.properties %}checked{% endif %}> {{ property.name }}</label>
+      {% endfor %}
+    </fieldset>
+    <label class="checkbox-label"><input type="checkbox" name="user_{{ user_index }}_remove"> Remove user</label>
+  </div>
+  {% endfor %}
+
+  <h2>Front Desk Users</h2>
+  {% for user in settings.frontdesk_users %}
+  {% set frontdesk_user_index = loop.index0 %}
+  <div class="group-block">
+    <label>Username <input name="frontdesk_user_{{ frontdesk_user_index }}_username" value="{{ user.username }}" required></label>
+    <label>Password <input type="password" name="frontdesk_user_{{ frontdesk_user_index }}_password" value="{{ user.password }}" required></label>
+    <fieldset>
+      <legend>Assigned Properties</legend>
+      {% for property in settings.properties %}
+      <label class="checkbox-label"><input type="checkbox" name="frontdesk_user_{{ frontdesk_user_index }}_properties" value="{{ property.id }}" {% if property.id in user.properties %}checked{% endif %}> {{ property.name }}</label>
+      {% endfor %}
+    </fieldset>
+    <label class="checkbox-label"><input type="checkbox" name="frontdesk_user_{{ frontdesk_user_index }}_remove"> Remove front desk user</label>
+  </div>
+  {% endfor %}
+
+  <h2>Properties</h2>
+  {% for property in settings.properties %}
+  <div class="group-block">
+    <label>Property Name <input name="property_{{ loop.index0 }}_name" value="{{ property.name }}" required></label>
+    <label>Rooms (one per line)
+      <textarea name="property_{{ loop.index0 }}_rooms" rows="4">{{ property.rooms|join('\n') }}</textarea>
+    </label>
+    <label class="checkbox-label"><input type="checkbox" name="property_{{ loop.index0 }}_remove"> Remove property</label>
+  </div>
+  {% endfor %}
+
+  <button type="submit">Save Settings</button>
+</form>
+<form method="post" action="{{ url_for('admin_logout') }}">
+  <button type="submit">Admin Logout</button>
+</form>
+{% endblock %}

@@ -1,0 +1,39 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>{{ property_data.name }} - Room {{ room }} History</h1>
+
+<div class="card">
+  {% if recent_logs %}
+  <table class="jobs-table">
+    <thead>
+      <tr>
+        <th>Job</th>
+        <th>Room</th>
+        <th>Issue</th>
+        <th>Created At</th>
+        <th>Resolution</th>
+        <th>Completed At</th>
+        <th>Completed By</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for job in recent_logs %}
+      <tr>
+        <td>#{{ job.job_number }}</td>
+        <td>{{ job.room }}</td>
+        <td>{{ job.issue }}</td>
+        <td>{{ job.created_at_display }}</td>
+        <td>{{ job.resolution or '' }}</td>
+        <td>{{ job.completed_at_display }}</td>
+        <td>{{ job.completed_by or 'Unknown' }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p>No completed jobs for this room yet.</p>
+  {% endif %}
+</div>
+
+<p><a href="{{ url_for('forum_location_history', location=property_data.id) }}">Back to room list</a></p>
+{% endblock %}
