@@ -32,6 +32,22 @@
   </form>
 </section>
 
+<section class="card">
+  <h2>Add Room</h2>
+  <form method="post" class="inline-form">
+    <input type="hidden" name="action" value="add_room">
+    <label>Property
+      <select name="room_property_id" required>
+        {% for property in settings.properties %}
+        <option value="{{ property.id }}">{{ property.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Room Number <input name="new_room_name" required></label>
+    <button type="submit">Add Room</button>
+  </form>
+</section>
+
 <form method="post" class="card settings-grid">
   <input type="hidden" name="action" value="save">
 
@@ -71,13 +87,9 @@
   {% for property in settings.properties %}
   <div class="group-block">
     <label>Property Name <input name="property_{{ loop.index0 }}_name" value="{{ property.name }}" required></label>
-
-    <h4>Notifications</h4>
-    <label>Report Recipients <input name="property_{{ loop.index0 }}_weekly_report_emails" value="{{ property.weekly_report_emails }}"></label>
-    <label>Report Day <input name="property_{{ loop.index0 }}_weekly_report_day" value="{{ property.weekly_report_day }}"></label>
-    <label>Report Time <input name="property_{{ loop.index0 }}_weekly_report_time" value="{{ property.weekly_report_time }}"></label>
-    <label>Completion CC Addresses <input name="property_{{ loop.index0 }}_job_completion_cc" value="{{ property.job_completion_cc }}"></label>
-
+    <label>Rooms (one per line)
+      <textarea name="property_{{ loop.index0 }}_rooms" rows="4">{{ property.rooms|join('\n') }}</textarea>
+    </label>
     <label class="checkbox-label"><input type="checkbox" name="property_{{ loop.index0 }}_remove"> Remove property</label>
   </div>
   {% endfor %}

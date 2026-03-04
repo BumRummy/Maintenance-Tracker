@@ -7,7 +7,15 @@
 <div class="card">
   <h2>New Maintenance Request</h2>
   <form method="post" action="{{ url_for('frontdesk_create_job') }}" class="settings-grid">
-    <label>Location <input name="location" required></label>
+    <label>Location
+      <select name="property_id" required>
+        <option value="">Select location</option>
+        {% for property in assigned_properties %}
+        <option value="{{ property.id }}">{{ property.name }}</option>
+        {% endfor %}
+      </select>
+    </label>
+    <label>Room <input name="room_number" required></label>
     <label>Issue <input name="issue" required></label>
     <button type="submit">Create Request</button>
   </form>
@@ -18,13 +26,14 @@
   {% if open_jobs %}
   <table class="jobs-table">
     <thead>
-      <tr><th>Job</th><th>Location</th><th>Issue</th><th>Status</th><th>Created By</th></tr>
+      <tr><th>Job</th><th>Location</th><th>Room</th><th>Issue</th><th>Status</th><th>Created By</th></tr>
     </thead>
     <tbody>
       {% for job in open_jobs %}
       <tr>
         <td>#{{ job.job_number }}</td>
-        <td>{{ job.location or job.room_number }}</td>
+        <td>{{ property_name_by_id.get(job.property_id, job.property_id) }}</td>
+        <td>{{ job.room_number }}</td>
         <td>{{ job.issue }}</td>
         <td>{{ job.status }}</td>
         <td>{{ job.created_by or 'Unknown' }}</td>

@@ -22,22 +22,13 @@ DEFAULT_SETTINGS = {
             "properties": ["default-property"],
         }
     ],
-    "properties": [
-        {
-            "id": "default-property",
-            "name": "Default Property",
-            "weekly_report_emails": "",
-            "weekly_report_day": "monday",
-            "weekly_report_time": "09:00",
-            "job_completion_cc": "",
-        }
-    ],
+    "properties": [{"id": "default-property", "name": "Default Property", "rooms": []}],
 }
 
 
-def make_slug(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return slug or "property"
+def make_slug(value: str, fallback: str = "property") -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (value or "").lower()).strip("-")
+    return slug or fallback
 
 
 def to_int(value, default: int) -> int:
@@ -57,11 +48,15 @@ def format_display_datetime(value: str | None) -> str:
     return parsed.strftime("%d%b%y %H:%M").upper()
 
 
+def normalize_room(value: str) -> str:
+    return re.sub(r"\s+", " ", (value or "").strip())
+
+
 def prepare_recent_logs(logs: list[dict]) -> list[dict]:
     formatted_logs = []
     for job in logs:
         row = deepcopy(job)
-        row["room"] = row.get("location") or row.get("room_number") or ""
+        row["room"] = normalize_room(row.get("room_number") or row.get("location") or "")
         row["created_at_display"] = format_display_datetime(row.get("created_time"))
         row["completed_at_display"] = format_display_datetime(row.get("completion_time"))
         formatted_logs.append(row)
@@ -101,35 +96,19 @@ class SettingsStore:
     def _normalize(self, data: dict) -> dict:
         settings = deepcopy(DEFAULT_SETTINGS)
 
-        users = data.get("users")
-        if isinstance(users, list):
-            settings["users"] = []
-            for user in users:
+        for key in ["users", "frontdesk_users"]:
+            values = data.get(key)
+            if not isinstance(values, list):
+                continue
+            settings[key] = []
+            for user in values:
                 if not isinstance(user, dict):
                     continue
                 username = str(user.get("username", "")).strip()
                 password = str(user.get("password", "")).strip()
                 properties = user.get("properties", [])
                 if username and password:
-                    settings["users"].append(
-                        {
-                            "username": username,
-                            "password": password,
-                            "properties": properties if isinstance(properties, list) else [],
-                        }
-                    )
-
-        frontdesk_users = data.get("frontdesk_users")
-        if isinstance(frontdesk_users, list):
-            settings["frontdesk_users"] = []
-            for user in frontdesk_users:
-                if not isinstance(user, dict):
-                    continue
-                username = str(user.get("username", "")).strip()
-                password = str(user.get("password", "")).strip()
-                properties = user.get("properties", [])
-                if username and password:
-                    settings["frontdesk_users"].append(
+                    settings[key].append(
                         {
                             "username": username,
                             "password": password,
@@ -147,16 +126,12 @@ class SettingsStore:
                 if not name:
                     continue
                 prop_id = make_slug(str(prop.get("id") or name))
-                settings["properties"].append(
-                    {
-                        "id": prop_id,
-                        "name": name,
-                        "weekly_report_emails": str(prop.get("weekly_report_emails", "")).strip(),
-                        "weekly_report_day": str(prop.get("weekly_report_day", "monday")).strip(),
-                        "weekly_report_time": str(prop.get("weekly_report_time", "09:00")).strip(),
-                        "job_completion_cc": str(prop.get("job_completion_cc", "")).strip(),
-                    }
-                )
+                rooms = []
+                for room in prop.get("rooms", []):
+                    room_name = normalize_room(str(room))
+                    if room_name and room_name not in rooms:
+                        rooms.append(room_name)
+                settings["properties"].append({"id": prop_id, "name": name, "rooms": rooms})
 
         if not settings["users"]:
             settings["users"] = deepcopy(DEFAULT_SETTINGS["users"])
@@ -175,6 +150,22 @@ class SettingsStore:
     def save(self, settings: dict) -> None:
         with self.config_file.open("w", encoding="utf-8") as f:
             json.dump(settings, f, indent=2)
+
+    def add_room(self, property_id: str, room_name: str) -> bool:
+        clean_room = normalize_room(room_name)
+        if not clean_room:
+            return False
+        settings = self.load()
+        for prop in settings["properties"]:
+            if prop["id"] != property_id:
+                continue
+            rooms = prop.setdefault("rooms", [])
+            if clean_room not in rooms:
+                rooms.append(clean_room)
+                rooms.sort()
+                self.save(settings)
+            return True
+        return False
 
 
 class JobsStore:
@@ -197,7 +188,8 @@ class JobsStore:
                 continue
             row = deepcopy(value)
             row["job_number"] = str(row.get("job_number", key))
-            row.setdefault("room_number", "")
+            row.setdefault("property_id", "")
+            row.setdefault("room_number", normalize_room(row.get("location", "")))
             row.setdefault("location", row.get("room_number", ""))
             row.setdefault("issue", "")
             row.setdefault("status", "Pending")
@@ -218,14 +210,16 @@ class JobsStore:
             return "1"
         return str(max(int(k) for k in jobs.keys()) + 1)
 
-    def create_job(self, location: str, issue: str, created_by: str) -> str:
+    def create_job(self, property_id: str, room_number: str, issue: str, created_by: str) -> str:
         jobs = self.load()
         job_number = self._next_number(jobs)
         now = datetime.now().isoformat()
+        clean_room = normalize_room(room_number)
         jobs[job_number] = {
             "job_number": job_number,
-            "room_number": location,
-            "location": location,
+            "property_id": property_id,
+            "room_number": clean_room,
+            "location": clean_room,
             "issue": issue,
             "status": "Pending",
             "created_time": now,
@@ -250,15 +244,22 @@ class JobsStore:
         self.save(jobs)
         return True
 
-    def get_open_jobs(self) -> list[dict]:
-        jobs = self.load()
-        open_jobs = [job for job in jobs.values() if job.get("status") != "Completed"]
+    def get_open_jobs(self, property_id: str | None = None) -> list[dict]:
+        jobs = self.load().values()
+        if property_id:
+            jobs = [job for job in jobs if job.get("property_id") == property_id]
+        open_jobs = [job for job in jobs if job.get("status") != "Completed"]
         return sorted(open_jobs, key=lambda item: item.get("created_time") or "", reverse=True)
 
-    def get_recent_logs(self, days: int = 14) -> list[dict]:
+    def get_recent_logs(self, days: int = 14, property_id: str | None = None, room: str | None = None) -> list[dict]:
         cutoff = datetime.now() - timedelta(days=days)
         logs = []
+        desired_room = normalize_room(room or "")
         for job in self.load().values():
+            if property_id and job.get("property_id") != property_id:
+                continue
+            if desired_room and normalize_room(job.get("room_number", "")) != desired_room:
+                continue
             completion = job.get("completion_time")
             if not completion:
                 continue
@@ -270,10 +271,22 @@ class JobsStore:
                 logs.append(job)
         return sorted(logs, key=lambda item: item.get("completion_time") or "", reverse=True)
 
+    def get_recent_room_names(self, property_id: str, days: int = 14) -> list[str]:
+        rooms = {
+            normalize_room(job.get("room_number", ""))
+            for job in self.get_recent_logs(days=days, property_id=property_id)
+            if normalize_room(job.get("room_number", ""))
+        }
+        return sorted(rooms)
+
 
 def property_names_for_ids(properties: list[dict], property_ids: list[str]) -> list[str]:
     names_by_id = {item["id"]: item["name"] for item in properties}
     return [names_by_id[prop_id] for prop_id in property_ids if prop_id in names_by_id]
+
+
+def get_property(settings: dict, property_id: str) -> dict | None:
+    return next((item for item in settings["properties"] if item["id"] == property_id), None)
 
 
 def create_app() -> Flask:
@@ -292,16 +305,10 @@ def create_app() -> Flask:
         if session.get("frontdesk_authenticated"):
             return redirect(url_for("frontdesk_home"))
         if session.get("forum_authenticated"):
-            settings = app.config["SETTINGS_STORE"].load()
-            assigned_property_ids = session.get("forum_properties", [])
-            assigned_property_names = property_names_for_ids(settings["properties"], assigned_property_ids)
-            jobs_store = app.config["JOBS_STORE"]
-            return render_template(
-                "forum_home.html",
-                assigned_property_names=assigned_property_names,
-                open_jobs=jobs_store.get_open_jobs(),
-                recent_logs=prepare_recent_logs(jobs_store.get_recent_logs(days=14)),
-            )
+            properties = session.get("forum_properties", [])
+            if properties:
+                return redirect(url_for("forum_location_home", location=properties[0]))
+            return redirect(url_for("forum_login"))
         return redirect(url_for("frontdesk_login"))
 
     @app.route("/frontdesk/login", methods=["GET", "POST"])
@@ -338,30 +345,48 @@ def create_app() -> Flask:
         if not session.get("frontdesk_authenticated"):
             return redirect(url_for("frontdesk_login"))
         settings = app.config["SETTINGS_STORE"].load()
-        assigned_property_names = property_names_for_ids(
-            settings["properties"], session.get("frontdesk_properties", [])
-        )
+        assigned_property_ids = session.get("frontdesk_properties", [])
+        assigned_properties = [p for p in settings["properties"] if p["id"] in assigned_property_ids]
         jobs_store = app.config["JOBS_STORE"]
-        open_jobs = jobs_store.get_open_jobs()
-        recent_logs = prepare_recent_logs(jobs_store.get_recent_logs(days=14))
+        open_jobs = [job for p in assigned_properties for job in jobs_store.get_open_jobs(property_id=p["id"])]
+        recent_logs = [
+            job for p in assigned_properties for job in jobs_store.get_recent_logs(days=14, property_id=p["id"])
+        ]
+        open_jobs.sort(key=lambda item: item.get("created_time") or "", reverse=True)
+        recent_logs.sort(key=lambda item: item.get("completion_time") or "", reverse=True)
         return render_template(
             "frontdesk_home.html",
-            assigned_property_names=assigned_property_names,
+            assigned_property_names=[p["name"] for p in assigned_properties],
+            assigned_properties=assigned_properties,
+            property_name_by_id={p['id']: p['name'] for p in settings['properties']},
             open_jobs=open_jobs,
-            recent_logs=recent_logs,
+            recent_logs=prepare_recent_logs(recent_logs),
         )
 
     @app.post("/frontdesk/jobs/new")
     def frontdesk_create_job():
         if not session.get("frontdesk_authenticated"):
             return redirect(url_for("frontdesk_login"))
-        location = request.form.get("location", "").strip()
+        settings_store = app.config["SETTINGS_STORE"]
+        settings = settings_store.load()
+        property_id = request.form.get("property_id", "").strip()
+        room_number = normalize_room(request.form.get("room_number", "") or request.form.get("location", ""))
         issue = request.form.get("issue", "").strip()
-        if not location or not issue:
-            flash("Location and issue are required.", "error")
+
+        assigned_property_ids = set(session.get("frontdesk_properties", []))
+        if not property_id and len(assigned_property_ids) == 1:
+            property_id = next(iter(assigned_property_ids))
+
+        if property_id not in assigned_property_ids:
+            flash("Choose one of your assigned locations.", "error")
             return redirect(url_for("frontdesk_home"))
+        if not room_number or not issue:
+            flash("Room and issue are required.", "error")
+            return redirect(url_for("frontdesk_home"))
+
         created_by = session.get("frontdesk_username", "frontdesk")
-        job_number = app.config["JOBS_STORE"].create_job(location, issue, created_by)
+        job_number = app.config["JOBS_STORE"].create_job(property_id, room_number, issue, created_by)
+        settings_store.add_room(property_id, room_number)
         flash(f"Maintenance request #{job_number} created.", "success")
         return redirect(url_for("frontdesk_home"))
 
@@ -383,7 +408,9 @@ def create_app() -> Flask:
                 session["forum_authenticated"] = True
                 session["forum_username"] = matched["username"]
                 session["forum_properties"] = matched.get("properties", [])
-                return redirect(url_for("index"))
+                if matched.get("properties"):
+                    return redirect(url_for("forum_location_home", location=matched["properties"][0]))
+                return redirect(url_for("forum_login"))
             flash("Invalid forum username or password.", "error")
         return render_template("forum_login.html")
 
@@ -394,17 +421,82 @@ def create_app() -> Flask:
         session.pop("forum_properties", None)
         return redirect(url_for("forum_login"))
 
+    @app.get("/<location>")
+    def forum_location_home(location: str):
+        if not session.get("forum_authenticated"):
+            return redirect(url_for("forum_login"))
+        if location not in session.get("forum_properties", []):
+            flash("You do not have access to that location.", "error")
+            return redirect(url_for("index"))
+
+        settings = app.config["SETTINGS_STORE"].load()
+        property_data = get_property(settings, location)
+        if not property_data:
+            flash("Location not found.", "error")
+            return redirect(url_for("index"))
+
+        jobs_store = app.config["JOBS_STORE"]
+        return render_template(
+            "forum_home.html",
+            property_data=property_data,
+            assigned_property_names=property_names_for_ids(settings["properties"], session.get("forum_properties", [])),
+            open_jobs=jobs_store.get_open_jobs(property_id=location),
+            recent_logs=prepare_recent_logs(jobs_store.get_recent_logs(days=14, property_id=location)),
+        )
+
+    @app.get("/<location>/history")
+    def forum_location_history(location: str):
+        if not session.get("forum_authenticated"):
+            return redirect(url_for("forum_login"))
+        if location not in session.get("forum_properties", []):
+            flash("You do not have access to that location.", "error")
+            return redirect(url_for("index"))
+
+        settings = app.config["SETTINGS_STORE"].load()
+        property_data = get_property(settings, location)
+        if not property_data:
+            flash("Location not found.", "error")
+            return redirect(url_for("index"))
+
+        jobs_store = app.config["JOBS_STORE"]
+        recent_rooms = jobs_store.get_recent_room_names(location, days=14)
+        known_rooms = sorted(set(property_data.get("rooms", [])).union(recent_rooms))
+        return render_template("history_rooms.html", property_data=property_data, rooms=known_rooms)
+
+    @app.get("/history/<location>/<room>")
+    def forum_room_history(location: str, room: str):
+        if not session.get("forum_authenticated"):
+            return redirect(url_for("forum_login"))
+        if location not in session.get("forum_properties", []):
+            flash("You do not have access to that location.", "error")
+            return redirect(url_for("index"))
+
+        settings = app.config["SETTINGS_STORE"].load()
+        property_data = get_property(settings, location)
+        if not property_data:
+            flash("Location not found.", "error")
+            return redirect(url_for("index"))
+
+        logs = app.config["JOBS_STORE"].get_recent_logs(days=14, property_id=location, room=room)
+        return render_template(
+            "history_room_detail.html",
+            property_data=property_data,
+            room=room,
+            recent_logs=prepare_recent_logs(logs),
+        )
+
     @app.post("/jobs/<job_number>/complete")
     def complete_job(job_number: str):
         if not session.get("forum_authenticated"):
             return redirect(url_for("forum_login"))
         completed_by = session.get("forum_username", "")
         resolution = request.form.get("resolution", "").strip()
+        location = request.form.get("location", "")
         if app.config["JOBS_STORE"].complete_job(job_number, completed_by, resolution):
             flash(f"Job #{job_number} marked completed by {completed_by}.", "success")
         else:
             flash(f"Job #{job_number} not found.", "error")
-        return redirect(url_for("index"))
+        return redirect(url_for("forum_location_home", location=location) if location else url_for("index"))
 
     @app.route("/admin/login", methods=["GET", "POST"])
     def admin_login():
@@ -445,7 +537,9 @@ def create_app() -> Flask:
                 username = request.form.get("new_frontdesk_username", "").strip()
                 password = request.form.get("new_frontdesk_password", "").strip()
                 if username and password:
-                    settings_data["frontdesk_users"].append({"username": username, "password": password, "properties": []})
+                    settings_data["frontdesk_users"].append(
+                        {"username": username, "password": password, "properties": []}
+                    )
                     store.save(settings_data)
                     flash("Front desk user added.", "success")
                     return redirect(url_for("settings"))
@@ -453,20 +547,19 @@ def create_app() -> Flask:
             elif action == "add_property":
                 name = request.form.get("new_property_name", "").strip()
                 if name:
-                    settings_data["properties"].append(
-                        {
-                            "id": make_slug(name),
-                            "name": name,
-                            "weekly_report_emails": "",
-                            "weekly_report_day": "monday",
-                            "weekly_report_time": "09:00",
-                            "job_completion_cc": "",
-                        }
-                    )
+                    settings_data["properties"].append({"id": make_slug(name), "name": name, "rooms": []})
                     store.save(settings_data)
                     flash("Property added.", "success")
                     return redirect(url_for("settings"))
                 flash("Property name required.", "error")
+            elif action == "add_room":
+                property_id = request.form.get("room_property_id", "").strip()
+                room_name = normalize_room(request.form.get("new_room_name", ""))
+                if store.add_room(property_id, room_name):
+                    flash("Room added.", "success")
+                else:
+                    flash("Could not add room.", "error")
+                return redirect(url_for("settings"))
             else:
                 updated = {"users": [], "frontdesk_users": [], "properties": []}
 
@@ -508,24 +601,13 @@ def create_app() -> Flask:
                     name = request.form.get(f"property_{i}_name", existing["name"]).strip()
                     if not name:
                         continue
-                    updated["properties"].append(
-                        {
-                            "id": existing["id"],
-                            "name": name,
-                            "weekly_report_emails": request.form.get(
-                                f"property_{i}_weekly_report_emails", ""
-                            ).strip(),
-                            "weekly_report_day": request.form.get(
-                                f"property_{i}_weekly_report_day", "monday"
-                            ).strip(),
-                            "weekly_report_time": request.form.get(
-                                f"property_{i}_weekly_report_time", "09:00"
-                            ).strip(),
-                            "job_completion_cc": request.form.get(
-                                f"property_{i}_job_completion_cc", ""
-                            ).strip(),
-                        }
-                    )
+                    rooms_raw = request.form.get(f"property_{i}_rooms", "")
+                    rooms = []
+                    for item in rooms_raw.split("\n"):
+                        room_name = normalize_room(item)
+                        if room_name and room_name not in rooms:
+                            rooms.append(room_name)
+                    updated["properties"].append({"id": existing["id"], "name": name, "rooms": rooms})
 
                 property_ids = {prop["id"] for prop in updated["properties"]}
                 for group in ["users", "frontdesk_users"]:
