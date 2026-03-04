@@ -251,8 +251,8 @@ class JobsStore:
         open_jobs = [job for job in jobs if job.get("status") != "Completed"]
         return sorted(open_jobs, key=lambda item: item.get("created_time") or "", reverse=True)
 
-    def get_recent_logs(self, days: int = 14, property_id: str | None = None, room: str | None = None) -> list[dict]:
-        cutoff = datetime.now() - timedelta(days=days)
+    def get_recent_logs(self, days: int | None = 14, property_id: str | None = None, room: str | None = None) -> list[dict]:
+        cutoff = datetime.now() - timedelta(days=days) if days is not None else None
         logs = []
         desired_room = normalize_room(room or "")
         for job in self.load().values():
@@ -267,11 +267,11 @@ class JobsStore:
                 completed_at = datetime.fromisoformat(completion)
             except (TypeError, ValueError):
                 continue
-            if completed_at >= cutoff:
+            if cutoff is None or completed_at >= cutoff:
                 logs.append(job)
         return sorted(logs, key=lambda item: item.get("completion_time") or "", reverse=True)
 
-    def get_recent_room_names(self, property_id: str, days: int = 14) -> list[str]:
+    def get_recent_room_names(self, property_id: str, days: int | None = 14) -> list[str]:
         rooms = {
             normalize_room(job.get("room_number", ""))
             for job in self.get_recent_logs(days=days, property_id=property_id)
@@ -459,7 +459,7 @@ def create_app() -> Flask:
             return redirect(url_for("index"))
 
         jobs_store = app.config["JOBS_STORE"]
-        recent_rooms = jobs_store.get_recent_room_names(location, days=14)
+        recent_rooms = jobs_store.get_recent_room_names(location, days=None)
         known_rooms = sorted(set(property_data.get("rooms", [])).union(recent_rooms))
         return render_template("history_rooms.html", property_data=property_data, rooms=known_rooms)
 
@@ -477,7 +477,7 @@ def create_app() -> Flask:
             flash("Location not found.", "error")
             return redirect(url_for("index"))
 
-        logs = app.config["JOBS_STORE"].get_recent_logs(days=14, property_id=location, room=room)
+        logs = app.config["JOBS_STORE"].get_recent_logs(days=None, property_id=location, room=room)
         return render_template(
             "history_room_detail.html",
             property_data=property_data,
