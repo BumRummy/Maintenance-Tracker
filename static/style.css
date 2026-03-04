@@ -41,6 +41,16 @@ button {
   color: #fff;
 }
 button:hover { background: #4c93da; }
+.button-link {
+  display: inline-block;
+  text-decoration: none;
+  border: 1px solid #4d8fd4;
+  background: #5aa3ec;
+  color: #fff;
+  border-radius: 12px;
+  padding: .6rem .85rem;
+}
+.button-link:hover { background: #4c93da; }
 .flash { margin-bottom: .75rem; padding: .6rem .8rem; border-radius: 10px; }
 .flash.error { background: rgba(255, 230, 230, 0.9); }
 .flash.success { background: rgba(226, 248, 229, 0.9); }
