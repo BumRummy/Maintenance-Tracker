@@ -5,13 +5,20 @@ from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
+import requests
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 
 DEFAULT_SETTINGS = {
     "users": [
-        {"username": "admin", "password": "admin123", "role": "admin"},
-        {"username": "maintenance", "password": "changeme", "role": "maintenance"},
-        {"username": "frontdesk", "password": "changeme", "role": "front_desk"},
+        {"username": "admin", "password": "admin123", "role": "admin", "email": "", "force_password_change": False},
+        {
+            "username": "maintenance",
+            "password": "changeme",
+            "role": "maintenance",
+            "email": "",
+            "force_password_change": False,
+        },
+        {"username": "frontdesk", "password": "changeme", "role": "front_desk", "email": "", "force_password_change": False},
     ]
 }
 
@@ -89,6 +96,8 @@ def create_app() -> Flask:
 
     store = Store(os.getenv("CONFIG_PATH", "/data"))
     app.config["STORE"] = store
+    app.config["RESEND_API_KEY"] = os.getenv("RESEND_API_KEY", "")
+    app.config["RESEND_FROM"] = os.getenv("RESEND_FROM", "noreply@bmiMaintenance.com")
 
     @app.template_filter("fmtdate")
     def fmt_date(value):
@@ -108,6 +117,63 @@ def create_app() -> Flask:
             return redirect(url_for("dashboard"))
         return None
 
+    def _normalize_users(settings: dict) -> bool:
+        changed = False
+        for user in settings.get("users", []):
+            if "email" not in user:
+                user["email"] = ""
+                changed = True
+            if "force_password_change" not in user:
+                user["force_password_change"] = False
+                changed = True
+            if "reset_token" not in user:
+                user["reset_token"] = None
+                changed = True
+            if "reset_expires_at" not in user:
+                user["reset_expires_at"] = None
+                changed = True
+        return changed
+
+    def _send_email_via_resend(to_email: str, subject: str, html: str) -> tuple[bool, str]:
+        api_key = app.config["RESEND_API_KEY"].strip()
+        if not api_key:
+            return False, "RESEND_API_KEY is not configured."
+        from_email = app.config["RESEND_FROM"].strip()
+        payload = {
+            "from": from_email,
+            "to": [to_email],
+            "subject": subject,
+            "html": html,
+            "text": "Use the password reset link in the HTML email body.",
+        }
+        try:
+            response = requests.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "maintenance-tracker/1.0",
+                },
+                json=payload,
+                timeout=10,
+            )
+            if 200 <= response.status_code < 300:
+                return True, ""
+
+            response_body = response.text.strip()
+            app.logger.error(
+                "Resend email failed (status=%s, from=%s, to=%s, body=%s)",
+                response.status_code,
+                from_email,
+                to_email,
+                response_body,
+            )
+            return False, f"Email API rejected request ({response.status_code})."
+        except requests.RequestException as exc:
+            app.logger.exception("Resend email request failed: %s", exc)
+            return False, "Unable to reach email API."
+
     @app.route("/login", methods=["GET", "POST"])
     def login():
         if session.get("user"):
@@ -123,9 +189,104 @@ def create_app() -> Flask:
             if user:
                 session["user"] = user["username"]
                 session["role"] = user["role"]
+                if user.get("force_password_change"):
+                    return redirect(url_for("first_login_password_change"))
                 return redirect(url_for("dashboard"))
             flash("Invalid username or password.", "error")
         return render_template("login.html")
+
+    @app.route("/first-login-password", methods=["GET", "POST"])
+    def first_login_password_change():
+        if not session.get("user"):
+            return redirect(url_for("login"))
+        settings = store.load_settings()
+        if _normalize_users(settings):
+            store.save_settings(settings)
+        user = next((u for u in settings["users"] if u["username"] == session["user"]), None)
+        if not user:
+            session.clear()
+            return redirect(url_for("login"))
+        if request.method == "POST":
+            new_password = request.form.get("new_password", "").strip()
+            confirm_password = request.form.get("confirm_password", "").strip()
+            if len(new_password) < 8:
+                flash("Password must be at least 8 characters.", "error")
+            elif new_password != confirm_password:
+                flash("Passwords do not match.", "error")
+            else:
+                user["password"] = new_password
+                user["force_password_change"] = False
+                store.save_settings(settings)
+                flash("Password updated successfully.", "success")
+                return redirect(url_for("dashboard"))
+        return render_template("first_login_password.html")
+
+    @app.route("/forgot-password", methods=["GET", "POST"])
+    def forgot_password():
+        if request.method == "POST":
+            username = request.form.get("username", "").strip().lower()
+            settings = store.load_settings()
+            if _normalize_users(settings):
+                store.save_settings(settings)
+            user = next((u for u in settings["users"] if u["username"].lower() == username), None)
+            if not user or not user.get("email"):
+                flash("If the account exists, reset instructions were sent.", "success")
+                return redirect(url_for("forgot_password"))
+
+            token = uuid.uuid4().hex
+            expires_at = (datetime.now(timezone.utc) + timedelta(minutes=30)).isoformat()
+            user["reset_token"] = token
+            user["reset_expires_at"] = expires_at
+            store.save_settings(settings)
+            reset_link = url_for("reset_password", token=token, _external=True)
+            ok, error_text = _send_email_via_resend(
+                user["email"],
+                "Reset your BMI Maintenance password",
+                (
+                    f"<p>Hello {user['username']},</p>"
+                    f"<p>Use this link to reset your password (valid for 30 minutes):</p>"
+                    f"<p><a href='{reset_link}'>{reset_link}</a></p>"
+                ),
+            )
+            if ok:
+                flash("If the account exists, reset instructions were sent.", "success")
+            else:
+                flash(f"Unable to send reset email right now. {error_text}", "error")
+            return redirect(url_for("forgot_password"))
+        return render_template("forgot_password.html")
+
+    @app.route("/reset-password/<token>", methods=["GET", "POST"])
+    def reset_password(token: str):
+        settings = store.load_settings()
+        if _normalize_users(settings):
+            store.save_settings(settings)
+
+        user = next((u for u in settings["users"] if u.get("reset_token") == token), None)
+        now = datetime.now(timezone.utc)
+        if not user:
+            flash("This password reset link is invalid.", "error")
+            return redirect(url_for("login"))
+        expires_at = user.get("reset_expires_at")
+        if not expires_at or datetime.fromisoformat(expires_at) < now:
+            flash("This password reset link has expired.", "error")
+            return redirect(url_for("forgot_password"))
+
+        if request.method == "POST":
+            new_password = request.form.get("new_password", "").strip()
+            confirm_password = request.form.get("confirm_password", "").strip()
+            if len(new_password) < 8:
+                flash("Password must be at least 8 characters.", "error")
+            elif new_password != confirm_password:
+                flash("Passwords do not match.", "error")
+            else:
+                user["password"] = new_password
+                user["force_password_change"] = False
+                user["reset_token"] = None
+                user["reset_expires_at"] = None
+                store.save_settings(settings)
+                flash("Password has been reset. Please sign in.", "success")
+                return redirect(url_for("login"))
+        return render_template("reset_password.html")
 
     @app.post("/logout")
     def logout():
@@ -226,6 +387,8 @@ def create_app() -> Flask:
         if guard:
             return guard
         settings = store.load_settings()
+        if _normalize_users(settings):
+            store.save_settings(settings)
 
         if request.method == "POST":
             action = request.form.get("action")
@@ -233,13 +396,24 @@ def create_app() -> Flask:
             if action == "add_user":
                 username = request.form.get("username", "").strip().lower()
                 password = request.form.get("password", "").strip()
+                email = request.form.get("email", "").strip().lower()
                 role = request.form.get("role", "").strip()
-                if not username or not password or role not in ("maintenance", "front_desk"):
-                    flash("Username, password, and valid role are required.", "error")
+                if not username or not password or not email or role not in ("maintenance", "front_desk"):
+                    flash("Username, email, password, and valid role are required.", "error")
                 elif any(u["username"].lower() == username for u in settings["users"]):
                     flash("Username already exists.", "error")
                 else:
-                    settings["users"].append({"username": username, "password": password, "role": role})
+                    settings["users"].append(
+                        {
+                            "username": username,
+                            "email": email,
+                            "password": password,
+                            "role": role,
+                            "force_password_change": True,
+                            "reset_token": None,
+                            "reset_expires_at": None,
+                        }
+                    )
                     store.save_settings(settings)
                     flash(f"User '{username}' added.", "success")
                 return redirect(url_for("admin"))
