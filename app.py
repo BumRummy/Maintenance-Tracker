@@ -111,11 +111,11 @@ def create_app() -> Flask:
         if session.get("user"):
             return redirect(url_for("dashboard"))
         if request.method == "POST":
-            username = request.form.get("username", "").strip()
+            username = request.form.get("username", "").strip().lower()
             password = request.form.get("password", "").strip()
             settings = store.load_settings()
             user = next(
-                (u for u in settings["users"] if u["username"] == username and u["password"] == password),
+                (u for u in settings["users"] if u["username"].lower() == username and u["password"] == password),
                 None,
             )
             if user:
@@ -216,12 +216,12 @@ def create_app() -> Flask:
             action = request.form.get("action")
 
             if action == "add_user":
-                username = request.form.get("username", "").strip()
+                username = request.form.get("username", "").strip().lower()
                 password = request.form.get("password", "").strip()
                 role = request.form.get("role", "").strip()
                 if not username or not password or role not in ("maintenance", "front_desk"):
                     flash("Username, password, and valid role are required.", "error")
-                elif any(u["username"] == username for u in settings["users"]):
+                elif any(u["username"].lower() == username for u in settings["users"]):
                     flash("Username already exists.", "error")
                 else:
                     settings["users"].append({"username": username, "password": password, "role": role})
