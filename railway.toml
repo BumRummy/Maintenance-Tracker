@@ -5,6 +5,6 @@ dockerfilePath = "Dockerfile"
 [deploy]
 startCommand = "gunicorn --bind 0.0.0.0:${PORT:-7070} --workers 2 'app:create_app()'"
 healthcheckPath = "/forum/login"
-healthcheckTimeout = 30
+healthcheckTimeout = 100
 restartPolicyType = "ON_FAILURE"
 restartPolicyMaxRetries = 3
