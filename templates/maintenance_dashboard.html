@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Open Issues</h1>
+{% if open_issues %}
+<div class="issue-list">
+  {% for issue in open_issues %}
+  <div class="issue-card">
+    <div class="issue-header">
+      <span class="badge room">Room {{ issue.room }}</span>
+      <span class="issue-meta">Reported {{ issue.created_at | fmtdate }} by {{ issue.created_by }}</span>
+    </div>
+    <p class="issue-desc">{{ issue.description }}</p>
+    <form method="post" action="{{ url_for('close_issue', issue_id=issue.id) }}">
+      <button type="submit" class="btn-success">Mark as Fixed</button>
+    </form>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty">No open issues — all clear.</p>
+{% endif %}
+{% endblock %}

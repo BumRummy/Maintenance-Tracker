@@ -3,10 +3,30 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Maintenance Tracker</title>
+  <title>HCK Maintenance Tracker</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
 </head>
 <body>
+  {% if session.user %}
+  <nav class="nav">
+    <span class="nav-brand">HCK Maintenance</span>
+    <div class="nav-links">
+      {% if session.role == 'maintenance' %}
+        <a href="{{ url_for('dashboard') }}">Open Issues</a>
+        <a href="{{ url_for('history') }}">History</a>
+      {% elif session.role == 'front_desk' %}
+        <a href="{{ url_for('dashboard') }}">Dashboard</a>
+      {% elif session.role == 'admin' %}
+        <a href="{{ url_for('admin') }}">Users</a>
+        <a href="{{ url_for('history') }}">History</a>
+      {% endif %}
+      <span class="nav-user">{{ session.user }} &middot; {{ session.role | replace('_', ' ') | title }}</span>
+      <form method="post" action="{{ url_for('logout') }}" style="display:inline">
+        <button type="submit" class="btn-link">Sign out</button>
+      </form>
+    </div>
+  </nav>
+  {% endif %}
   <main class="container">
     {% with messages = get_flashed_messages(with_categories=true) %}
       {% if messages %}

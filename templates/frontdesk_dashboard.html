@@ -1,0 +1,55 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-header">
+  <h1>Dashboard</h1>
+  <button class="btn-primary" onclick="document.getElementById('new-issue-modal').classList.add('open')">+ New Issue</button>
+</div>
+
+<div id="new-issue-modal" class="modal-overlay">
+  <div class="modal">
+    <h2>Report an Issue</h2>
+    <form method="post" action="{{ url_for('create_issue') }}" class="card">
+      <label>Room Number <input name="room" required autofocus placeholder="e.g. 101"></label>
+      <label>Description <textarea name="description" required rows="3" placeholder="Describe the issue…"></textarea></label>
+      <div class="modal-actions">
+        <button type="submit" class="btn-primary">Submit</button>
+        <button type="button" onclick="document.getElementById('new-issue-modal').classList.remove('open')">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>
+
+<h2>Open Issues</h2>
+{% if open_issues %}
+<div class="issue-list">
+  {% for issue in open_issues %}
+  <div class="issue-card">
+    <div class="issue-header">
+      <span class="badge room">Room {{ issue.room }}</span>
+      <span class="issue-meta">Reported {{ issue.created_at | fmtdate }} by {{ issue.created_by }}</span>
+    </div>
+    <p class="issue-desc">{{ issue.description }}</p>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty">No open issues.</p>
+{% endif %}
+
+<h2>Recently Resolved <small>(last 2 weeks)</small></h2>
+{% if recent_closed %}
+<div class="issue-list">
+  {% for issue in recent_closed %}
+  <div class="issue-card resolved">
+    <div class="issue-header">
+      <span class="badge room">Room {{ issue.room }}</span>
+      <span class="issue-meta">Resolved {{ issue.closed_at | fmtdate }}</span>
+    </div>
+    <p class="issue-desc">{{ issue.description }}</p>
+  </div>
+  {% endfor %}
+</div>
+{% else %}
+<p class="empty">No resolved issues in the last 2 weeks.</p>
+{% endif %}
+{% endblock %}
