@@ -12,6 +12,8 @@ services:
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-admin123}
       SECRET_KEY: ${SECRET_KEY:-change-me}
       CONFIG_PATH: ${CONFIG_PATH:-/config}
+      RESEND_API_KEY: ${RESEND_API_KEY:-}
+      RESEND_FROM: ${RESEND_FROM:-noreply@bmiMaintenance.com}
       PUID: ${PUID:-1000}
       PGID: ${PGID:-1000}
     volumes:

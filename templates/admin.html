@@ -9,6 +9,7 @@
   <form method="post" class="inline-form">
     <input type="hidden" name="action" value="add_user">
     <label>Username <input name="username" required></label>
+    <label>Email <input type="email" name="email" required placeholder="user@example.com"></label>
     <label>Password <input type="password" name="password" required></label>
     <label>Role
       <select name="role">
@@ -25,6 +26,7 @@
     <thead>
       <tr>
         <th>Username</th>
+        <th>Email</th>
         <th>Role</th>
         <th>Change Password</th>
         <th></th>
@@ -34,6 +36,7 @@
       {% for user in users %}
       <tr>
         <td><strong>{{ user.username }}</strong></td>
+        <td>{{ user.email or "—" }}</td>
         <td><span class="role-pill {{ user.role }}">{{ user.role | replace('_', ' ') | title }}</span></td>
         <td>
           <form method="post" class="inline-form">
