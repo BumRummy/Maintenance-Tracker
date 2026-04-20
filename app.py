@@ -6,6 +6,7 @@ from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib import error, request as urllib_request
 
+import requests
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 
 DEFAULT_SETTINGS = {
@@ -135,34 +136,43 @@ def create_app() -> Flask:
         return changed
 
     def _send_email_via_resend(to_email: str, subject: str, html: str) -> tuple[bool, str]:
-        api_key = app.config["RESEND_API_KEY"]
+        api_key = app.config["RESEND_API_KEY"].strip()
         if not api_key:
             return False, "RESEND_API_KEY is not configured."
-        payload = json.dumps(
-            {
-                "from": app.config["RESEND_FROM"],
-                "to": [to_email],
-                "subject": subject,
-                "html": html,
-            }
-        ).encode("utf-8")
-        req = urllib_request.Request(
-            "https://api.resend.com/emails",
-            data=payload,
-            headers={
-                "Authorization": f"Bearer {api_key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
+        from_email = app.config["RESEND_FROM"].strip()
+        payload = {
+            "from": from_email,
+            "to": [to_email],
+            "subject": subject,
+            "html": html,
+            "text": "Use the password reset link in the HTML email body.",
+        }
         try:
-            with urllib_request.urlopen(req, timeout=10) as response:
-                if 200 <= response.status < 300:
-                    return True, ""
-                return False, f"Unexpected email API status: {response.status}"
-        except error.HTTPError as exc:
-            return False, f"Email API rejected request ({exc.code})."
-        except Exception:
+            response = requests.post(
+                "https://api.resend.com/emails",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": "maintenance-tracker/1.0",
+                },
+                json=payload,
+                timeout=10,
+            )
+            if 200 <= response.status_code < 300:
+                return True, ""
+
+            response_body = response.text.strip()
+            app.logger.error(
+                "Resend email failed (status=%s, from=%s, to=%s, body=%s)",
+                response.status_code,
+                from_email,
+                to_email,
+                response_body,
+            )
+            return False, f"Email API rejected request ({response.status_code})."
+        except requests.RequestException as exc:
+            app.logger.exception("Resend email request failed: %s", exc)
             return False, "Unable to reach email API."
 
     @app.route("/login", methods=["GET", "POST"])
