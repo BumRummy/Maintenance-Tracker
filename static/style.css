@@ -1,14 +1,74 @@
+*, *::before, *::after { box-sizing: border-box; }
 body { font-family: Arial, sans-serif; background: #f4f6f8; margin: 0; }
+a { color: #2563eb; }
+small { font-size: 0.8em; color: #6b7280; }
+
+/* Nav */
+.nav { background: #1e293b; color: #f1f5f9; display: flex; align-items: center; justify-content: space-between; padding: .75rem 1.5rem; gap: 1rem; flex-wrap: wrap; }
+.nav-brand { font-weight: bold; font-size: 1.1rem; letter-spacing: .03em; }
+.nav-links { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; }
+.nav-links a { color: #cbd5e1; text-decoration: none; font-size: .9rem; }
+.nav-links a:hover { color: #fff; }
+.nav-user { color: #94a3b8; font-size: .85rem; }
+.btn-link { background: none; border: none; color: #cbd5e1; cursor: pointer; font-size: .9rem; padding: 0; }
+.btn-link:hover { color: #fff; }
+
+/* Layout */
 .container { max-width: 960px; margin: 2rem auto; padding: 1rem; }
+.page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1rem; }
+.page-header h1 { margin: 0; }
+.login-wrap { max-width: 380px; margin: 4rem auto; }
+.login-wrap h1 { text-align: center; margin-bottom: 1rem; font-size: 1.4rem; color: #1e293b; }
+
+/* Cards */
 .card { background: #fff; padding: 1rem; border-radius: 8px; display: grid; gap: .75rem; margin-bottom: 1rem; }
-.settings-grid h2 { margin: 1rem 0 0.25rem; }
-label { display: grid; gap: .35rem; font-size: 0.95rem; }
-input, button { padding: .55rem; font-size: 1rem; }
-button { width: fit-content; cursor: pointer; }
+
+/* Flash */
 .flash { margin-bottom: .75rem; padding: .5rem .75rem; border-radius: 6px; }
-.flash.error { background: #ffe8e8; }
-.flash.success { background: #e8ffe9; }
+.flash.error { background: #ffe8e8; color: #991b1b; }
+.flash.success { background: #e8ffe9; color: #166534; }
+
+/* Forms */
+label { display: grid; gap: .35rem; font-size: 0.95rem; }
+input, select, textarea, button { padding: .55rem; font-size: 1rem; border: 1px solid #d1d5db; border-radius: 6px; }
+textarea { resize: vertical; font-family: inherit; }
+button { cursor: pointer; background: #e5e7eb; border: 1px solid #d1d5db; width: fit-content; }
+button:hover { background: #d1d5db; }
 .inline-form { display: flex; gap: 1rem; align-items: end; flex-wrap: wrap; }
-.group-block { border: 1px solid #e2e6ea; border-radius: 6px; padding: .8rem; display: grid; gap: .6rem; }
-.checkbox-label { display: flex; align-items: center; gap: .5rem; }
-fieldset { border: 1px solid #d9dde2; border-radius: 6px; padding: .75rem; }
+
+/* Buttons */
+.btn-primary { background: #2563eb; color: #fff; border-color: #2563eb; }
+.btn-primary:hover { background: #1d4ed8; }
+.btn-success { background: #16a34a; color: #fff; border-color: #16a34a; }
+.btn-success:hover { background: #15803d; }
+.btn-danger { background: #dc2626; color: #fff; border-color: #dc2626; font-size: .85rem; padding: .35rem .65rem; }
+.btn-danger:hover { background: #b91c1c; }
+
+/* Issue cards */
+.issue-list { display: grid; gap: .6rem; margin-bottom: 1.5rem; }
+.issue-card { background: #fff; border: 1px solid #e2e6ea; border-radius: 8px; padding: .9rem 1rem; display: grid; gap: .5rem; }
+.issue-card.resolved { border-left: 4px solid #16a34a; opacity: .85; }
+.issue-header { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: .4rem; }
+.issue-desc { margin: 0; color: #374151; }
+.issue-meta { font-size: .82rem; color: #6b7280; }
+.issue-meta-light { font-size: .8rem; color: #9ca3af; }
+.badge { font-size: .8rem; font-weight: bold; padding: .2rem .55rem; border-radius: 99px; }
+.badge.room { background: #dbeafe; color: #1e40af; }
+.empty { color: #9ca3af; font-style: italic; }
+
+/* Room sections in history */
+.room-section { margin-bottom: 1.5rem; }
+.room-heading { margin: 0 0 .75rem; color: #1e293b; font-size: 1.1rem; }
+
+/* Modal */
+.modal-overlay { display: none; position: fixed; inset: 0; background: rgba(0,0,0,.45); z-index: 100; align-items: center; justify-content: center; }
+.modal-overlay.open { display: flex; }
+.modal { background: #fff; border-radius: 10px; padding: 1.5rem; width: 100%; max-width: 440px; box-shadow: 0 8px 32px rgba(0,0,0,.18); }
+.modal h2 { margin: 0 0 1rem; }
+.modal .card { box-shadow: none; padding: 0; margin: 0; }
+.modal-actions { display: flex; gap: .75rem; margin-top: .25rem; }
+
+/* Admin table */
+.user-table { width: 100%; border-collapse: collapse; font-size: .95rem; }
+.user-table th, .user-table td { text-align: left; padding: .6rem .75rem; border-bottom: 1px solid #e5e7eb; vertical-align: middle; }
+.user-table th { color: #6b7280; font-weight: 600; font-size: .85rem; text-transform: uppercase; }

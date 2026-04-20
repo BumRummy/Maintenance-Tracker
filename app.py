@@ -1,445 +1,259 @@
 import json
 import os
-import re
+import uuid
 from copy import deepcopy
+from datetime import datetime, timezone, timedelta
 from pathlib import Path
 
 from flask import Flask, flash, redirect, render_template, request, session, url_for
 
 DEFAULT_SETTINGS = {
     "users": [
-        {
-            "username": "maintainer",
-            "password": "changeme",
-            "properties": ["default-property"],
-        }
-    ],
-    "properties": [
-        {
-            "id": "default-property",
-            "name": "Default Property",
-            "receiving_addresses": "",
-            "smtp_server": "smtp.gmail.com",
-            "smtp_port": 587,
-            "smtp_username": "",
-            "smtp_password": "",
-            "smtp_use_tls": True,
-            "weekly_report_emails": "",
-            "weekly_report_day": "monday",
-            "weekly_report_time": "09:00",
-            "job_completion_cc": "",
-        }
-    ],
+        {"username": "admin", "password": "admin123", "role": "admin"},
+        {"username": "maintenance", "password": "changeme", "role": "maintenance"},
+        {"username": "frontdesk", "password": "changeme", "role": "front_desk"},
+    ]
 }
 
 
-def make_slug(value: str) -> str:
-    slug = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return slug or "property"
-
-
-def to_int(value, default: int) -> int:
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-class SettingsStore:
+class Store:
     def __init__(self, config_dir: str):
         self.config_dir = Path(config_dir)
-        self.config_file = self.config_dir / "settings.json"
-        self._ensure_dir()
-
-    def _ensure_dir(self) -> None:
+        self.settings_file = self.config_dir / "settings.json"
+        self.issues_file = self.config_dir / "issues.json"
         self.config_dir.mkdir(parents=True, exist_ok=True)
-        puid = os.getenv("PUID")
-        pgid = os.getenv("PGID")
-        if os.geteuid() == 0 and puid and pgid:
-            try:
-                os.chown(self.config_dir, int(puid), int(pgid))
-            except (PermissionError, ValueError):
-                pass
 
-    def load(self) -> dict:
-        if not self.config_file.exists():
-            settings = deepcopy(DEFAULT_SETTINGS)
-            self.save(settings)
-            return settings
+    def _write(self, path: Path, data) -> None:
+        with path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
 
+    def load_settings(self) -> dict:
+        if not self.settings_file.exists():
+            data = deepcopy(DEFAULT_SETTINGS)
+            self._write(self.settings_file, data)
+            return data
         try:
-            with self.config_file.open("r", encoding="utf-8") as f:
-                data = json.load(f)
+            with self.settings_file.open("r", encoding="utf-8") as f:
+                return json.load(f)
         except (OSError, json.JSONDecodeError):
-            data = {}
+            return deepcopy(DEFAULT_SETTINGS)
 
-        return self._normalize(data)
+    def save_settings(self, data: dict) -> None:
+        self._write(self.settings_file, data)
 
-    def _normalize(self, data: dict) -> dict:
-        settings = deepcopy(DEFAULT_SETTINGS)
+    def load_issues(self) -> list:
+        if not self.issues_file.exists():
+            return []
+        try:
+            with self.issues_file.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return []
 
-        # Backward compatibility with old single-forum/single-email settings.
-        legacy_forum = data.get("forum")
-        legacy_email = data.get("email")
-        legacy_notification = data.get("notification")
+    def save_issues(self, issues: list) -> None:
+        self._write(self.issues_file, issues)
 
-        if isinstance(legacy_forum, dict):
-            username = str(legacy_forum.get("username", "")).strip()
-            password = str(legacy_forum.get("password", "")).strip()
-            if username and password:
-                settings["users"] = [
-                    {
-                        "username": username,
-                        "password": password,
-                        "properties": [settings["properties"][0]["id"]],
-                    }
-                ]
+    def add_issue(self, room: str, description: str, created_by: str) -> dict:
+        issues = self.load_issues()
+        issue = {
+            "id": str(uuid.uuid4()),
+            "room": room.strip().upper(),
+            "description": description.strip(),
+            "status": "open",
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "created_by": created_by,
+            "closed_at": None,
+            "closed_by": None,
+        }
+        issues.append(issue)
+        self.save_issues(issues)
+        return issue
 
-        if isinstance(legacy_email, dict):
-            settings["properties"][0].update(
-                {
-                    "receiving_addresses": str(
-                        legacy_email.get("email_address", "")
-                    ).strip(),
-                    "smtp_server": str(legacy_email.get("smtp_server", "")).strip(),
-                    "smtp_port": to_int(legacy_email.get("smtp_port"), 587),
-                    "smtp_username": str(legacy_email.get("email_address", "")).strip(),
-                    "smtp_password": str(legacy_email.get("password", "")).strip(),
-                    "smtp_use_tls": bool(legacy_email.get("use_tls", True)),
-                }
-            )
-
-        if isinstance(legacy_notification, dict):
-            settings["properties"][0].update(
-                {
-                    "weekly_report_emails": str(
-                        legacy_notification.get("weekly_report_email", "")
-                    ).strip(),
-                    "weekly_report_day": str(
-                        legacy_notification.get("send_day", "monday")
-                    ).strip(),
-                    "weekly_report_time": str(
-                        legacy_notification.get("send_time", "09:00")
-                    ).strip(),
-                    "job_completion_cc": str(
-                        legacy_notification.get("cc_emails", "")
-                    ).strip(),
-                }
-            )
-
-        users = data.get("users")
-        if isinstance(users, list):
-            settings["users"] = []
-            for user in users:
-                if not isinstance(user, dict):
-                    continue
-                username = str(user.get("username", "")).strip()
-                password = str(user.get("password", "")).strip()
-                properties = user.get("properties", [])
-                if not username or not password:
-                    continue
-                if not isinstance(properties, list):
-                    properties = []
-                settings["users"].append(
-                    {
-                        "username": username,
-                        "password": password,
-                        "properties": [str(prop) for prop in properties],
-                    }
-                )
-
-        properties = data.get("properties")
-        if isinstance(properties, list):
-            settings["properties"] = []
-            for prop in properties:
-                if not isinstance(prop, dict):
-                    continue
-                name = str(prop.get("name", "")).strip()
-                prop_id = make_slug(str(prop.get("id") or name))
-                if not name:
-                    continue
-                settings["properties"].append(
-                    {
-                        "id": prop_id,
-                        "name": name,
-                        "receiving_addresses": str(
-                            prop.get("receiving_addresses", "")
-                        ).strip(),
-                        "smtp_server": str(prop.get("smtp_server", "")).strip(),
-                        "smtp_port": to_int(prop.get("smtp_port"), 587),
-                        "smtp_username": str(prop.get("smtp_username", "")).strip(),
-                        "smtp_password": str(prop.get("smtp_password", "")).strip(),
-                        "smtp_use_tls": bool(prop.get("smtp_use_tls", True)),
-                        "weekly_report_emails": str(
-                            prop.get("weekly_report_emails", "")
-                        ).strip(),
-                        "weekly_report_day": str(
-                            prop.get("weekly_report_day", "monday")
-                        ).strip(),
-                        "weekly_report_time": str(
-                            prop.get("weekly_report_time", "09:00")
-                        ).strip(),
-                        "job_completion_cc": str(
-                            prop.get("job_completion_cc", "")
-                        ).strip(),
-                    }
-                )
-
-        property_ids = {prop["id"] for prop in settings["properties"]}
-        for user in settings["users"]:
-            user["properties"] = [
-                prop_id for prop_id in user["properties"] if prop_id in property_ids
-            ]
-
-        if not settings["users"]:
-            settings["users"] = deepcopy(DEFAULT_SETTINGS["users"])
-        if not settings["properties"]:
-            settings["properties"] = deepcopy(DEFAULT_SETTINGS["properties"])
-        return settings
-
-    def save(self, settings: dict) -> None:
-        with self.config_file.open("w", encoding="utf-8") as f:
-            json.dump(settings, f, indent=2)
-
-
-def property_names_for_ids(properties: list[dict], property_ids: list[str]) -> list[str]:
-    names_by_id = {item["id"]: item["name"] for item in properties}
-    return [names_by_id[prop_id] for prop_id in property_ids if prop_id in names_by_id]
+    def close_issue(self, issue_id: str, closed_by: str) -> bool:
+        issues = self.load_issues()
+        for issue in issues:
+            if issue["id"] == issue_id and issue["status"] == "open":
+                issue["status"] = "closed"
+                issue["closed_at"] = datetime.now(timezone.utc).isoformat()
+                issue["closed_by"] = closed_by
+                self.save_issues(issues)
+                return True
+        return False
 
 
 def create_app() -> Flask:
     app = Flask(__name__)
     app.secret_key = os.getenv("SECRET_KEY", "change-me")
 
-    app.config["ADMIN_USERNAME"] = os.getenv("ADMIN_USERNAME", "admin")
-    app.config["ADMIN_PASSWORD"] = os.getenv("ADMIN_PASSWORD", "admin123")
+    store = Store(os.getenv("CONFIG_PATH", "/data"))
+    app.config["STORE"] = store
 
-    config_dir = os.getenv("CONFIG_PATH", "/config")
-    app.config["SETTINGS_STORE"] = SettingsStore(config_dir)
+    @app.template_filter("fmtdate")
+    def fmt_date(value):
+        if not value:
+            return "—"
+        try:
+            dt = datetime.fromisoformat(str(value))
+            return dt.strftime("%b %d %Y %H:%M")
+        except (ValueError, AttributeError):
+            return str(value)[:10]
+
+    def _require(roles=None):
+        if not session.get("user"):
+            return redirect(url_for("login"))
+        if roles and session.get("role") not in roles:
+            flash("Access denied.", "error")
+            return redirect(url_for("dashboard"))
+        return None
+
+    @app.route("/login", methods=["GET", "POST"])
+    def login():
+        if session.get("user"):
+            return redirect(url_for("dashboard"))
+        if request.method == "POST":
+            username = request.form.get("username", "").strip().lower()
+            password = request.form.get("password", "").strip()
+            settings = store.load_settings()
+            user = next(
+                (u for u in settings["users"] if u["username"].lower() == username and u["password"] == password),
+                None,
+            )
+            if user:
+                session["user"] = user["username"]
+                session["role"] = user["role"]
+                return redirect(url_for("dashboard"))
+            flash("Invalid username or password.", "error")
+        return render_template("login.html")
+
+    @app.post("/logout")
+    def logout():
+        session.clear()
+        return redirect(url_for("login"))
 
     @app.get("/")
     def index():
-        if not session.get("forum_authenticated"):
-            return redirect(url_for("forum_login"))
+        if not session.get("user"):
+            return redirect(url_for("login"))
+        return redirect(url_for("dashboard"))
 
-        settings = app.config["SETTINGS_STORE"].load()
-        assigned_property_ids = session.get("forum_properties", [])
-        assigned_property_names = property_names_for_ids(
-            settings["properties"], assigned_property_ids
+    @app.get("/dashboard")
+    def dashboard():
+        guard = _require()
+        if guard:
+            return guard
+        role = session["role"]
+
+        if role == "admin":
+            return redirect(url_for("admin"))
+
+        issues = store.load_issues()
+        open_issues = sorted(
+            (i for i in issues if i["status"] == "open"),
+            key=lambda x: x["created_at"],
+        )
+
+        if role == "maintenance":
+            return render_template("maintenance_dashboard.html", open_issues=open_issues)
+
+        cutoff = (datetime.now(timezone.utc) - timedelta(weeks=2)).isoformat()
+        recent_closed = sorted(
+            (i for i in issues if i["status"] == "closed" and (i.get("closed_at") or "") >= cutoff),
+            key=lambda x: x.get("closed_at", ""),
+            reverse=True,
         )
         return render_template(
-            "forum_home.html", assigned_property_names=assigned_property_names
+            "frontdesk_dashboard.html",
+            open_issues=open_issues,
+            recent_closed=recent_closed,
         )
 
-    @app.route("/forum/login", methods=["GET", "POST"])
-    def forum_login():
-        if request.method == "POST":
-            settings = app.config["SETTINGS_STORE"].load()
-            username = request.form.get("username", "").strip()
-            password = request.form.get("password", "").strip()
+    @app.get("/history")
+    def history():
+        guard = _require(roles=("maintenance", "admin"))
+        if guard:
+            return guard
+        issues = store.load_issues()
+        closed = sorted(
+            (i for i in issues if i["status"] == "closed"),
+            key=lambda x: x.get("closed_at", ""),
+            reverse=True,
+        )
+        by_room: dict[str, list] = {}
+        for issue in closed:
+            by_room.setdefault(issue["room"], []).append(issue)
+        return render_template("history.html", by_room=by_room, rooms=sorted(by_room))
 
-            matched_user = next(
-                (
-                    user
-                    for user in settings["users"]
-                    if user["username"] == username and user["password"] == password
-                ),
-                None,
-            )
-            if matched_user:
-                session["forum_authenticated"] = True
-                session["forum_username"] = matched_user["username"]
-                session["forum_properties"] = matched_user.get("properties", [])
-                return redirect(url_for("index"))
+    @app.post("/issues")
+    def create_issue():
+        guard = _require(roles=("front_desk", "admin"))
+        if guard:
+            return guard
+        room = request.form.get("room", "").strip()
+        description = request.form.get("description", "").strip()
+        if not room or not description:
+            flash("Room and description are required.", "error")
+            return redirect(url_for("dashboard"))
+        store.add_issue(room, description, session["user"])
+        flash(f"Issue submitted for room {room.upper()}.", "success")
+        return redirect(url_for("dashboard"))
 
-            flash("Invalid forum username or password.", "error")
-        return render_template("forum_login.html")
+    @app.post("/issues/<issue_id>/close")
+    def close_issue(issue_id):
+        guard = _require(roles=("maintenance", "admin"))
+        if guard:
+            return guard
+        store.close_issue(issue_id, session["user"])
+        return redirect(url_for("dashboard"))
 
-    @app.post("/forum/logout")
-    def forum_logout():
-        session.pop("forum_authenticated", None)
-        session.pop("forum_username", None)
-        session.pop("forum_properties", None)
-        return redirect(url_for("forum_login"))
-
-    @app.route("/admin/login", methods=["GET", "POST"])
-    def admin_login():
-        if request.method == "POST":
-            username = request.form.get("username", "")
-            password = request.form.get("password", "")
-
-            if (
-                username == app.config["ADMIN_USERNAME"]
-                and password == app.config["ADMIN_PASSWORD"]
-            ):
-                session["admin_authenticated"] = True
-                return redirect(url_for("settings"))
-            flash("Invalid admin credentials.", "error")
-
-        return render_template("admin_login.html")
-
-    @app.post("/admin/logout")
-    def admin_logout():
-        session.pop("admin_authenticated", None)
-        return redirect(url_for("admin_login"))
-
-    @app.route("/settings", methods=["GET", "POST"])
-    def settings():
-        if not session.get("admin_authenticated"):
-            return redirect(url_for("admin_login"))
-
-        store = app.config["SETTINGS_STORE"]
-        settings_data = store.load()
+    @app.route("/admin", methods=["GET", "POST"])
+    def admin():
+        guard = _require(roles=("admin",))
+        if guard:
+            return guard
+        settings = store.load_settings()
 
         if request.method == "POST":
-            action = request.form.get("action", "save")
+            action = request.form.get("action")
+
             if action == "add_user":
-                username = request.form.get("new_username", "").strip()
-                password = request.form.get("new_password", "").strip()
-                if not username or not password:
-                    flash("New users require both username and password.", "error")
-                elif any(user["username"] == username for user in settings_data["users"]):
-                    flash("Usernames must be unique.", "error")
+                username = request.form.get("username", "").strip().lower()
+                password = request.form.get("password", "").strip()
+                role = request.form.get("role", "").strip()
+                if not username or not password or role not in ("maintenance", "front_desk"):
+                    flash("Username, password, and valid role are required.", "error")
+                elif any(u["username"].lower() == username for u in settings["users"]):
+                    flash("Username already exists.", "error")
                 else:
-                    settings_data["users"].append(
-                        {"username": username, "password": password, "properties": []}
-                    )
-                    store.save(settings_data)
-                    flash("User added.", "success")
-                    return redirect(url_for("settings"))
-            elif action == "add_property":
-                name = request.form.get("new_property_name", "").strip()
-                if not name:
-                    flash("Property name is required.", "error")
+                    settings["users"].append({"username": username, "password": password, "role": role})
+                    store.save_settings(settings)
+                    flash(f"User '{username}' added.", "success")
+                return redirect(url_for("admin"))
+
+            if action == "delete_user":
+                username = request.form.get("username", "").strip()
+                if username == session["user"]:
+                    flash("Cannot delete your own account.", "error")
                 else:
-                    prop_id = make_slug(name)
-                    existing_ids = {prop["id"] for prop in settings_data["properties"]}
-                    base_id = prop_id
-                    counter = 2
-                    while prop_id in existing_ids:
-                        prop_id = f"{base_id}-{counter}"
-                        counter += 1
-                    settings_data["properties"].append(
-                        {
-                            "id": prop_id,
-                            "name": name,
-                            "receiving_addresses": "",
-                            "smtp_server": "smtp.gmail.com",
-                            "smtp_port": 587,
-                            "smtp_username": "",
-                            "smtp_password": "",
-                            "smtp_use_tls": True,
-                            "weekly_report_emails": "",
-                            "weekly_report_day": "monday",
-                            "weekly_report_time": "09:00",
-                            "job_completion_cc": "",
-                        }
-                    )
-                    store.save(settings_data)
-                    flash("Property added.", "success")
-                    return redirect(url_for("settings"))
-            else:
-                updated = {"users": [], "properties": []}
+                    settings["users"] = [u for u in settings["users"] if u["username"] != username]
+                    store.save_settings(settings)
+                    flash(f"User '{username}' deleted.", "success")
+                return redirect(url_for("admin"))
 
-                for index, existing_user in enumerate(settings_data["users"]):
-                    if request.form.get(f"user_{index}_remove") == "on":
-                        continue
-                    username = request.form.get(
-                        f"user_{index}_username", existing_user["username"]
-                    ).strip()
-                    password = request.form.get(
-                        f"user_{index}_password", existing_user["password"]
-                    ).strip()
-                    assigned = request.form.getlist(f"user_{index}_properties")
-                    if username and password:
-                        updated["users"].append(
-                            {
-                                "username": username,
-                                "password": password,
-                                "properties": assigned,
-                            }
-                        )
-
-                used_usernames = set()
-                unique_users = []
-                for user in updated["users"]:
-                    if user["username"] in used_usernames:
-                        continue
-                    unique_users.append(user)
-                    used_usernames.add(user["username"])
-                updated["users"] = unique_users
-
-                for index, existing_property in enumerate(settings_data["properties"]):
-                    if request.form.get(f"property_{index}_remove") == "on":
-                        continue
-                    prop_name = request.form.get(
-                        f"property_{index}_name", existing_property["name"]
-                    ).strip()
-                    prop_id = existing_property["id"]
-                    if not prop_name:
-                        continue
-                    updated["properties"].append(
-                        {
-                            "id": prop_id,
-                            "name": prop_name,
-                            "receiving_addresses": request.form.get(
-                                f"property_{index}_receiving_addresses", ""
-                            ).strip(),
-                            "smtp_server": request.form.get(
-                                f"property_{index}_smtp_server", ""
-                            ).strip(),
-                            "smtp_port": to_int(
-                                request.form.get(f"property_{index}_smtp_port"), 587
-                            ),
-                            "smtp_username": request.form.get(
-                                f"property_{index}_smtp_username", ""
-                            ).strip(),
-                            "smtp_password": request.form.get(
-                                f"property_{index}_smtp_password", ""
-                            ).strip(),
-                            "smtp_use_tls": request.form.get(
-                                f"property_{index}_smtp_use_tls"
-                            )
-                            == "on",
-                            "weekly_report_emails": request.form.get(
-                                f"property_{index}_weekly_report_emails", ""
-                            ).strip(),
-                            "weekly_report_day": request.form.get(
-                                f"property_{index}_weekly_report_day", "monday"
-                            ).strip(),
-                            "weekly_report_time": request.form.get(
-                                f"property_{index}_weekly_report_time", "09:00"
-                            ).strip(),
-                            "job_completion_cc": request.form.get(
-                                f"property_{index}_job_completion_cc", ""
-                            ).strip(),
-                        }
-                    )
-
-                property_ids = {prop["id"] for prop in updated["properties"]}
-                for user in updated["users"]:
-                    user["properties"] = [
-                        prop_id for prop_id in user["properties"] if prop_id in property_ids
-                    ]
-
-                if not updated["users"]:
-                    flash("At least one forum user is required.", "error")
-                elif not updated["properties"]:
-                    flash("At least one property is required.", "error")
+            if action == "change_password":
+                username = request.form.get("username", "").strip()
+                new_password = request.form.get("new_password", "").strip()
+                if not new_password:
+                    flash("New password required.", "error")
                 else:
-                    store.save(updated)
-                    flash("Settings saved.", "success")
-                    return redirect(url_for("settings"))
+                    for u in settings["users"]:
+                        if u["username"] == username:
+                            u["password"] = new_password
+                            break
+                    store.save_settings(settings)
+                    flash(f"Password updated for '{username}'.", "success")
+                return redirect(url_for("admin"))
 
-        property_name_by_id = {
-            property_item["id"]: property_item["name"]
-            for property_item in settings_data["properties"]
-        }
-        return render_template(
-            "settings.html",
-            settings=settings_data,
-            property_name_by_id=property_name_by_id,
-        )
+        return render_template("admin.html", users=settings["users"])
 
     return app
 

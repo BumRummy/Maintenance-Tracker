@@ -1,0 +1,59 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>User Management</h1>
+
+<section class="card">
+  <h2>Add User</h2>
+  <form method="post" class="inline-form">
+    <input type="hidden" name="action" value="add_user">
+    <label>Username <input name="username" required></label>
+    <label>Password <input type="password" name="password" required></label>
+    <label>Role
+      <select name="role">
+        <option value="front_desk">Front Desk</option>
+        <option value="maintenance">Maintenance</option>
+      </select>
+    </label>
+    <button type="submit" class="btn-primary">Add User</button>
+  </form>
+</section>
+
+<section class="card">
+  <h2>Users</h2>
+  <table class="user-table">
+    <thead>
+      <tr>
+        <th>Username</th>
+        <th>Role</th>
+        <th>Change Password</th>
+        <th></th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for user in users %}
+      <tr>
+        <td>{{ user.username }}</td>
+        <td>{{ user.role | replace('_', ' ') | title }}</td>
+        <td>
+          <form method="post" class="inline-form">
+            <input type="hidden" name="action" value="change_password">
+            <input type="hidden" name="username" value="{{ user.username }}">
+            <input type="password" name="new_password" placeholder="New password" required style="font-size:.9rem;padding:.4rem;">
+            <button type="submit" style="font-size:.9rem;padding:.4rem .7rem;">Update</button>
+          </form>
+        </td>
+        <td>
+          {% if user.username != session.user %}
+          <form method="post" onsubmit="return confirm('Delete {{ user.username }}?')">
+            <input type="hidden" name="action" value="delete_user">
+            <input type="hidden" name="username" value="{{ user.username }}">
+            <button type="submit" class="btn-danger">Delete</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

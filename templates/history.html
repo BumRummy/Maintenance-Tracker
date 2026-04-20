@@ -1,0 +1,24 @@
+{% extends 'base.html' %}
+{% block content %}
+<h1>Issue History by Room</h1>
+{% if rooms %}
+  {% for room in rooms %}
+  <section class="room-section card">
+    <h2 class="room-heading">Room {{ room }}</h2>
+    <div class="issue-list">
+      {% for issue in by_room[room] %}
+      <div class="issue-card resolved">
+        <div class="issue-header">
+          <span class="issue-meta">Resolved {{ issue.closed_at | fmtdate }}</span>
+          <span class="issue-meta-light">Reported {{ issue.created_at | fmtdate }} by {{ issue.created_by }}</span>
+        </div>
+        <p class="issue-desc">{{ issue.description }}</p>
+      </div>
+      {% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+{% else %}
+<p class="empty">No resolved issues yet.</p>
+{% endif %}
+{% endblock %}
