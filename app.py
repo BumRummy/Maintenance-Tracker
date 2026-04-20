@@ -333,7 +333,7 @@ def create_app() -> Flask:
 
     @app.get("/history")
     def history():
-        guard = _require(roles=("maintenance", "admin"))
+        guard = _require(roles=("maintenance", "front_desk", "admin"))
         if guard:
             return guard
         issues = store.load_issues()
