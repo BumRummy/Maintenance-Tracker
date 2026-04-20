@@ -1,55 +1,72 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="page-header">
-  <h1>Dashboard</h1>
-  <button class="btn-primary" onclick="document.getElementById('new-issue-modal').classList.add('open')">+ New Issue</button>
+  <h1>Open Issues <span class="count-badge">{{ open_issues | length }}</span></h1>
+  <button class="btn-primary" id="open-modal-btn">+ New Issue</button>
 </div>
 
 <div id="new-issue-modal" class="modal-overlay">
   <div class="modal">
     <h2>Report an Issue</h2>
-    <form method="post" action="{{ url_for('create_issue') }}" class="card">
-      <label>Room Number <input name="room" required autofocus placeholder="e.g. 101"></label>
-      <label>Description <textarea name="description" required rows="3" placeholder="Describe the issue…"></textarea></label>
+    <form method="post" action="{{ url_for('create_issue') }}" class="modal-form">
+      <label>Room Number
+        <input name="room" required autofocus placeholder="e.g. 101">
+      </label>
+      <label>Description
+        <textarea name="description" required rows="3" placeholder="Describe the issue…"></textarea>
+      </label>
       <div class="modal-actions">
-        <button type="submit" class="btn-primary">Submit</button>
-        <button type="button" onclick="document.getElementById('new-issue-modal').classList.remove('open')">Cancel</button>
+        <button type="submit" class="btn-primary">Submit Issue</button>
+        <button type="button" id="close-modal-btn">Cancel</button>
       </div>
     </form>
   </div>
 </div>
 
-<h2>Open Issues</h2>
 {% if open_issues %}
-<div class="issue-list">
+<div class="tile-grid">
   {% for issue in open_issues %}
-  <div class="issue-card">
-    <div class="issue-header">
-      <span class="badge room">Room {{ issue.room }}</span>
-      <span class="issue-meta">Reported {{ issue.created_at | fmtdate }} by {{ issue.created_by }}</span>
+  <div class="tile">
+    <div class="tile-room">Room {{ issue.room }}</div>
+    <div class="tile-desc">{{ issue.description }}</div>
+    <div class="tile-footer">
+      <span class="tile-meta">Reported {{ issue.created_at | fmtdate }}</span>
+      <span class="tile-meta">by {{ issue.created_by }}</span>
     </div>
-    <p class="issue-desc">{{ issue.description }}</p>
   </div>
   {% endfor %}
 </div>
 {% else %}
-<p class="empty">No open issues.</p>
+<div class="empty-state">
+  <p>No open issues. Use <strong>+ New Issue</strong> to report one.</p>
+</div>
 {% endif %}
 
-<h2>Recently Resolved <small>(last 2 weeks)</small></h2>
+<p class="section-title">Recently Resolved <span class="count-badge" style="background:#22c55e">{{ recent_closed | length }}</span></p>
+
 {% if recent_closed %}
-<div class="issue-list">
+<div class="tile-grid">
   {% for issue in recent_closed %}
-  <div class="issue-card resolved">
-    <div class="issue-header">
-      <span class="badge room">Room {{ issue.room }}</span>
-      <span class="issue-meta">Resolved {{ issue.closed_at | fmtdate }}</span>
+  <div class="tile resolved">
+    <div class="tile-room">Room {{ issue.room }}</div>
+    <div class="tile-desc">{{ issue.description }}</div>
+    <div class="tile-footer">
+      <span class="tile-meta">Resolved {{ issue.closed_at | fmtdate }}</span>
     </div>
-    <p class="issue-desc">{{ issue.description }}</p>
   </div>
   {% endfor %}
 </div>
 {% else %}
-<p class="empty">No resolved issues in the last 2 weeks.</p>
+<div class="empty-state">
+  <p>No resolved issues in the last 2 weeks.</p>
+</div>
 {% endif %}
+
+<script>
+  const modal = document.getElementById('new-issue-modal');
+  document.getElementById('open-modal-btn').addEventListener('click', () => modal.classList.add('open'));
+  document.getElementById('close-modal-btn').addEventListener('click', () => modal.classList.remove('open'));
+  modal.addEventListener('click', e => { if (e.target === modal) modal.classList.remove('open'); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') modal.classList.remove('open'); });
+</script>
 {% endblock %}
