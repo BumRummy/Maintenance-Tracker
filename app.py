@@ -447,5 +447,5 @@ def create_app() -> Flask:
 if __name__ == "__main__":
     app = create_app()
     host = os.getenv("WEB_HOST", "0.0.0.0")
-    port = int(os.getenv("WEB_PORT", "7070"))
+    port = int(os.getenv("PORT", os.getenv("WEB_PORT", "7070")))
     app.run(host=host, port=port)
