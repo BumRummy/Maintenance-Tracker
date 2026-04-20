@@ -17,4 +17,4 @@ ENV WEB_HOST=0.0.0.0 \
 
 EXPOSE 7070
 
-CMD gunicorn --bind "0.0.0.0:${PORT:-7070}" --workers 2 "app:create_app()"
+CMD ["/bin/sh", "-c", "gunicorn --bind 0.0.0.0:${PORT:-7070} --workers 2 'app:create_app()'"]
