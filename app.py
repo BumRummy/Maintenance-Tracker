@@ -4,6 +4,7 @@ import uuid
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from urllib import error, request as urllib_request
 
 import requests
 from flask import Flask, flash, redirect, render_template, request, session, url_for
