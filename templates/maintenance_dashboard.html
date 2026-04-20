@@ -14,7 +14,10 @@
       <span class="tile-meta">Reported {{ issue.created_at | fmtdate }}</span>
       <span class="tile-meta">by {{ issue.created_by }}</span>
     </div>
-    <form method="post" action="{{ url_for('close_issue', issue_id=issue.id) }}">
+    <form method="post" action="{{ url_for('close_issue', issue_id=issue.id) }}" class="resolution-form">
+      <label class="resolution-label">Resolution
+        <textarea name="resolution" required rows="2" placeholder="Describe what fixed this issue..."></textarea>
+      </label>
       <button type="submit" class="btn-success">&#10003; Mark as Fixed</button>
     </form>
   </div>
