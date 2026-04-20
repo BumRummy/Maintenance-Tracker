@@ -64,18 +64,20 @@ class Store:
             "created_by": created_by,
             "closed_at": None,
             "closed_by": None,
+            "resolution": None,
         }
         issues.append(issue)
         self.save_issues(issues)
         return issue
 
-    def close_issue(self, issue_id: str, closed_by: str) -> bool:
+    def close_issue(self, issue_id: str, closed_by: str, resolution: str) -> bool:
         issues = self.load_issues()
         for issue in issues:
             if issue["id"] == issue_id and issue["status"] == "open":
                 issue["status"] = "closed"
                 issue["closed_at"] = datetime.now(timezone.utc).isoformat()
                 issue["closed_by"] = closed_by
+                issue["resolution"] = resolution.strip()
                 self.save_issues(issues)
                 return True
         return False
@@ -181,7 +183,16 @@ def create_app() -> Flask:
         by_room: dict[str, list] = {}
         for issue in closed:
             by_room.setdefault(issue["room"], []).append(issue)
-        return render_template("history.html", by_room=by_room, rooms=sorted(by_room))
+
+        def room_sort_key(room: str):
+            digits = "".join(ch for ch in str(room) if ch.isdigit())
+            return (0, int(digits), str(room)) if digits else (1, str(room))
+
+        return render_template(
+            "history.html",
+            by_room=by_room,
+            rooms=sorted(by_room, key=room_sort_key),
+        )
 
     @app.post("/issues")
     def create_issue():
@@ -202,7 +213,11 @@ def create_app() -> Flask:
         guard = _require(roles=("maintenance", "admin"))
         if guard:
             return guard
-        store.close_issue(issue_id, session["user"])
+        resolution = request.form.get("resolution", "").strip()
+        if not resolution:
+            flash("Resolution is required before marking an issue complete.", "error")
+            return redirect(url_for("dashboard"))
+        store.close_issue(issue_id, session["user"], resolution)
         return redirect(url_for("dashboard"))
 
     @app.route("/admin", methods=["GET", "POST"])

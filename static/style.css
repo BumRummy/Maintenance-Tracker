@@ -58,6 +58,10 @@ button:hover { background: #e2e8f0; }
 .tile-meta { font-size: .78rem; color: #94a3b8; }
 .tile form { margin-top: .5rem; }
 .tile .btn-success { width: 100%; text-align: center; display: block; }
+.resolution-form { display: grid; gap: .5rem; }
+.resolution-label { font-size: .82rem; color: #64748b; }
+.resolution-label textarea { font-size: .9rem; min-height: 70px; }
+.tile-resolution { font-size: .85rem; color: #334155; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 6px; padding: .5rem .6rem; }
 
 /* Empty state */
 .empty-state { text-align: center; padding: 3rem 1rem; color: #94a3b8; }
@@ -65,12 +69,16 @@ button:hover { background: #e2e8f0; }
 
 /* History room card */
 .room-card { background: #fff; border-radius: 10px; box-shadow: 0 2px 8px rgba(0,0,0,.07); margin-bottom: 1.5rem; overflow: hidden; }
-.room-card-header { background: #1e293b; color: #f1f5f9; padding: .75rem 1.2rem; display: flex; align-items: center; justify-content: space-between; }
+.room-card-header { background: #1e293b; color: #f1f5f9; padding: .75rem 1.2rem; display: flex; align-items: center; justify-content: space-between; cursor: pointer; list-style: none; }
+.room-card-header::-webkit-details-marker { display: none; }
+.room-card-header::after { content: "▸"; color: #94a3b8; margin-left: .8rem; transition: transform .15s ease; }
+.room-card[open] .room-card-header::after { transform: rotate(90deg); }
 .room-card-title { font-size: 1.1rem; font-weight: 700; }
 .room-card-count { font-size: .8rem; color: #94a3b8; }
 .room-issues { padding: .75rem 1.2rem; display: grid; gap: .6rem; }
 .history-row { display: grid; grid-template-columns: 1fr auto; gap: .5rem; align-items: start; padding: .6rem .75rem; background: #f8fafc; border-radius: 8px; border-left: 3px solid #22c55e; }
 .history-desc { font-size: .95rem; color: #374151; }
+.history-resolution { font-size: .82rem; color: #475569; margin-top: .35rem; }
 .history-meta { font-size: .78rem; color: #94a3b8; text-align: right; white-space: nowrap; }
 
 /* Modal */

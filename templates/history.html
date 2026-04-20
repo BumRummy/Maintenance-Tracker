@@ -6,16 +6,17 @@
 
 {% if rooms %}
   {% for room in rooms %}
-  <div class="room-card">
-    <div class="room-card-header">
+  <details class="room-card">
+    <summary class="room-card-header">
       <span class="room-card-title">Room {{ room }}</span>
       <span class="room-card-count">{{ by_room[room] | length }} issue{{ 's' if by_room[room] | length != 1 }}</span>
-    </div>
+    </summary>
     <div class="room-issues">
       {% for issue in by_room[room] %}
       <div class="history-row">
         <div>
           <div class="history-desc">{{ issue.description }}</div>
+          <div class="history-resolution"><strong>Resolution:</strong> {{ issue.resolution or '—' }}</div>
         </div>
         <div class="history-meta">
           <div>Fixed {{ issue.closed_at | fmtdate }}</div>
@@ -24,7 +25,7 @@
       </div>
       {% endfor %}
     </div>
-  </div>
+  </details>
   {% endfor %}
 {% else %}
 <div class="empty-state">

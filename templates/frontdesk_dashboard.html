@@ -50,6 +50,7 @@
   <div class="tile resolved">
     <div class="tile-room">Room {{ issue.room }}</div>
     <div class="tile-desc">{{ issue.description }}</div>
+    <div class="tile-resolution"><strong>Resolution:</strong> {{ issue.resolution or '—' }}</div>
     <div class="tile-footer">
       <span class="tile-meta">Resolved {{ issue.closed_at | fmtdate }}</span>
     </div>
