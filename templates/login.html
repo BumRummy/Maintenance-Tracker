@@ -6,6 +6,7 @@
     <label>Username <input name="username" required autofocus></label>
     <label>Password <input type="password" name="password" required></label>
     <button type="submit" class="btn-primary">Sign in</button>
+    <a href="{{ url_for('forgot_password') }}" style="margin-top:.75rem;font-size:.9rem;">Forgot password?</a>
   </form>
 </div>
 {% endblock %}
