@@ -95,24 +95,8 @@ class Store:
 
     def load_or_create_vapid_keys(self) -> tuple[Vapid, str]:
         """Return a persistent VAPID key pair for push notifications."""
-        # Multiple Gunicorn workers may start simultaneously. Generate into a
-        # temporary file and atomically install it so every worker uses the
-        # same application-server key.
-        with _vapid_key_creation_lock:
-            if not self.vapid_private_key_file.exists():
-                vapid = Vapid()
-                vapid.generate_keys()
-                temporary_key_file = self.vapid_private_key_file.with_suffix(f".{uuid.uuid4().hex}.tmp")
-                temporary_key_file.write_bytes(vapid.private_pem())
-                temporary_key_file.chmod(0o600)
-                try:
-                    os.link(temporary_key_file, self.vapid_private_key_file)
-                except FileExistsError:
-                    pass
-                finally:
-                    temporary_key_file.unlink(missing_ok=True)
-            self.vapid_private_key_file.chmod(0o600)
-            vapid = Vapid.from_file(str(self.vapid_private_key_file))
+        vapid = Vapid.from_file(str(self.vapid_private_key_file))
+        self.vapid_private_key_file.chmod(0o600)
         public_key = vapid.public_key.public_bytes(
             serialization.Encoding.X962,
             serialization.PublicFormat.UncompressedPoint,

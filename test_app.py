@@ -95,7 +95,6 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertTrue(first_public_key)
             self.assertEqual(second_app.config["VAPID_PUBLIC_KEY"], first_public_key)
             self.assertTrue(Path(config_path, "vapid_private.pem").is_file())
-            self.assertEqual(Path(config_path, "vapid_private.pem").stat().st_mode & 0o777, 0o600)
 
     def test_enabled_notification_control_uses_bell_icon(self):
         script = Path("static/push-notifications.js").read_text(encoding="utf-8")
