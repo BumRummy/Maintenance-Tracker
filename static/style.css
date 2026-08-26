@@ -12,7 +12,9 @@ a { color: #2563eb; }
 .btn-link { background: none; border: none; color: #cbd5e1; cursor: pointer; font-size: .9rem; padding: 0; }
 .btn-link:hover { color: #fff; }
 .notification-button { border: 1px solid #64748b; border-radius: 6px; padding: .35rem .55rem; }
-.notification-button:disabled { cursor: default; color: #86efac; border-color: #166534; opacity: 1; }
+.notification-button.is-enabled { border: 0; padding: .2rem; color: #86efac; }
+.notification-button.is-enabled svg { display: block; width: 1.35rem; height: 1.35rem; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; }
+.notification-button:disabled { cursor: default; opacity: 1; }
 
 /* Layout */
 .container { max-width: 1100px; margin: 2rem auto; padding: 1rem; }
