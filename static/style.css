@@ -40,6 +40,7 @@ button:hover { background: #e2e8f0; }
 /* Buttons */
 .btn-primary { background: #2563eb; color: #fff !important; border-color: #2563eb; font-weight: 500; }
 .btn-primary:hover { background: #1d4ed8; }
+.btn-add-issue { width: 2.25rem; height: 2.25rem; padding: 0; border-radius: 50%; font-size: 1.4rem; line-height: 1; display: inline-flex; align-items: center; justify-content: center; }
 .btn-success { background: #16a34a; color: #fff !important; border-color: #16a34a; font-weight: 500; }
 .btn-success:hover { background: #15803d; }
 .btn-danger { background: #dc2626; color: #fff !important; border-color: #dc2626; font-size: .85rem; padding: .35rem .65rem; }

@@ -2,6 +2,25 @@
 {% block content %}
 <div class="page-header">
   <h1>Open Issues <span class="count-badge">{{ open_issues | length }}</span></h1>
+  <button class="btn-primary btn-add-issue" id="open-modal-btn" type="button" aria-label="Add maintenance issue">+</button>
+</div>
+
+<div id="new-issue-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="new-issue-title">
+  <div class="modal">
+    <h2 id="new-issue-title">Report an Issue</h2>
+    <form method="post" action="{{ url_for('create_issue') }}" class="modal-form">
+      <label>Room Number
+        <input name="room" required placeholder="e.g. 101">
+      </label>
+      <label>Description
+        <textarea name="description" required rows="3" placeholder="Describe the issue…"></textarea>
+      </label>
+      <div class="modal-actions">
+        <button type="submit" class="btn-primary">Submit Issue</button>
+        <button type="button" id="close-modal-btn">Cancel</button>
+      </div>
+    </form>
+  </div>
 </div>
 
 {% if open_issues %}
@@ -28,4 +47,16 @@
   <p>No open issues — all clear!</p>
 </div>
 {% endif %}
+
+<script>
+  const modal = document.getElementById('new-issue-modal');
+  const roomInput = modal.querySelector('input[name="room"]');
+  document.getElementById('open-modal-btn').addEventListener('click', () => {
+    modal.classList.add('open');
+    roomInput.focus();
+  });
+  document.getElementById('close-modal-btn').addEventListener('click', () => modal.classList.remove('open'));
+  modal.addEventListener('click', e => { if (e.target === modal) modal.classList.remove('open'); });
+  document.addEventListener('keydown', e => { if (e.key === 'Escape') modal.classList.remove('open'); });
+</script>
 {% endblock %}
