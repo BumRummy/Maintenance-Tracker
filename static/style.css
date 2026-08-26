@@ -11,6 +11,8 @@ a { color: #2563eb; }
 .nav-user { color: #94a3b8; font-size: .85rem; }
 .btn-link { background: none; border: none; color: #cbd5e1; cursor: pointer; font-size: .9rem; padding: 0; }
 .btn-link:hover { color: #fff; }
+.notification-button { border: 1px solid #64748b; border-radius: 6px; padding: .35rem .55rem; }
+.notification-button:disabled { cursor: default; color: #86efac; border-color: #166534; opacity: 1; }
 
 /* Layout */
 .container { max-width: 1100px; margin: 2rem auto; padding: 1rem; }

@@ -8,7 +8,8 @@ from urllib import error, request as urllib_request
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
-from flask import Flask, flash, redirect, render_template, request, session, url_for
+from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from pywebpush import WebPushException, webpush
 
 DEFAULT_SETTINGS = {
     "users": [
@@ -30,6 +31,7 @@ class Store:
         self.config_dir = Path(config_dir)
         self.settings_file = self.config_dir / "settings.json"
         self.issues_file = self.config_dir / "issues.json"
+        self.push_subscriptions_file = self.config_dir / "push_subscriptions.json"
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
     def _write(self, path: Path, data) -> None:
@@ -61,6 +63,28 @@ class Store:
 
     def save_issues(self, issues: list) -> None:
         self._write(self.issues_file, issues)
+
+    def load_push_subscriptions(self) -> list:
+        if not self.push_subscriptions_file.exists():
+            return []
+        try:
+            with self.push_subscriptions_file.open("r", encoding="utf-8") as f:
+                return json.load(f)
+        except (OSError, json.JSONDecodeError):
+            return []
+
+    def save_push_subscription(self, subscription: dict, username: str, role: str) -> None:
+        subscriptions = self.load_push_subscriptions()
+        endpoint = subscription["endpoint"]
+        subscriptions = [item for item in subscriptions if item.get("subscription", {}).get("endpoint") != endpoint]
+        subscriptions.append({"username": username, "role": role, "subscription": subscription})
+        self._write(self.push_subscriptions_file, subscriptions)
+
+    def remove_push_subscription(self, endpoint: str) -> None:
+        subscriptions = self.load_push_subscriptions()
+        remaining = [item for item in subscriptions if item.get("subscription", {}).get("endpoint") != endpoint]
+        if len(remaining) != len(subscriptions):
+            self._write(self.push_subscriptions_file, remaining)
 
     def add_issue(self, room: str, description: str, created_by: str) -> dict:
         issues = self.load_issues()
@@ -100,6 +124,9 @@ def create_app() -> Flask:
     app.config["STORE"] = store
     app.config["RESEND_API_KEY"] = os.getenv("RESEND_API_KEY", "")
     app.config["RESEND_FROM"] = os.getenv("RESEND_FROM", "noreply@bmiMaintenance.com")
+    app.config["VAPID_PUBLIC_KEY"] = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+    app.config["VAPID_PRIVATE_KEY"] = os.getenv("VAPID_PRIVATE_KEY", "").strip()
+    app.config["VAPID_CLAIMS_EMAIL"] = os.getenv("VAPID_CLAIMS_EMAIL", "mailto:admin@example.com").strip()
 
     timezone_name = os.getenv("TZ", "UTC").strip() or "UTC"
     try:
@@ -187,6 +214,39 @@ def create_app() -> Flask:
         except requests.RequestException as exc:
             app.logger.exception("Resend email request failed: %s", exc)
             return False, "Unable to reach email API."
+
+    def _send_new_issue_notifications(issue: dict) -> None:
+        private_key = app.config["VAPID_PRIVATE_KEY"]
+        if not private_key:
+            app.logger.warning("New-job push notification skipped: VAPID_PRIVATE_KEY is not configured.")
+            return
+
+        payload = json.dumps(
+            {
+                "title": f"New maintenance job · Room {issue['room']}",
+                "body": issue["description"],
+                "url": url_for("dashboard"),
+                "tag": f"issue-{issue['id']}",
+            }
+        )
+        for item in store.load_push_subscriptions():
+            if item.get("role") not in ("maintenance", "admin"):
+                continue
+            subscription = item.get("subscription", {})
+            try:
+                webpush(
+                    subscription_info=subscription,
+                    data=payload,
+                    vapid_private_key=private_key,
+                    vapid_claims={"sub": app.config["VAPID_CLAIMS_EMAIL"]},
+                    timeout=10,
+                )
+            except WebPushException as exc:
+                status_code = getattr(getattr(exc, "response", None), "status_code", None)
+                if status_code in (404, 410):
+                    store.remove_push_subscription(subscription.get("endpoint", ""))
+                else:
+                    app.logger.warning("Unable to send new-job push notification: %s", exc)
 
     @app.route("/login", methods=["GET", "POST"])
     def login():
@@ -313,6 +373,31 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         return redirect(url_for("dashboard"))
 
+    @app.get("/service-worker.js")
+    def service_worker():
+        response = app.send_static_file("service-worker.js")
+        response.headers["Service-Worker-Allowed"] = "/"
+        response.headers["Cache-Control"] = "no-cache"
+        return response
+
+    @app.get("/api/push/config")
+    def push_config():
+        guard = _require(roles=("maintenance", "admin"))
+        if guard:
+            return guard
+        return jsonify({"publicKey": app.config["VAPID_PUBLIC_KEY"]})
+
+    @app.post("/api/push/subscriptions")
+    def save_push_subscription():
+        guard = _require(roles=("maintenance", "admin"))
+        if guard:
+            return guard
+        subscription = request.get_json(silent=True) or {}
+        if not subscription.get("endpoint") or not subscription.get("keys"):
+            return jsonify({"error": "A valid push subscription is required."}), 400
+        store.save_push_subscription(subscription, session["user"], session["role"])
+        return jsonify({"ok": True}), 201
+
     @app.get("/dashboard")
     def dashboard():
         guard = _require()
@@ -379,7 +464,8 @@ def create_app() -> Flask:
         if not room or not description:
             flash("Room and description are required.", "error")
             return redirect(url_for("dashboard"))
-        store.add_issue(room, description, session["user"])
+        issue = store.add_issue(room, description, session["user"])
+        _send_new_issue_notifications(issue)
         flash(f"Issue submitted for room {room.upper()}.", "success")
         return redirect(url_for("dashboard"))
 
