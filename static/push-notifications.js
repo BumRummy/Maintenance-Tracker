@@ -28,18 +28,8 @@
     button.disabled = true;
     try {
       const registration = await navigator.serviceWorker.register('/service-worker.js');
-      const configResponse = await fetch('/api/push/config');
-      if (!configResponse.ok) throw new Error('Push configuration could not be loaded.');
-      const { publicKey } = await configResponse.json();
-      if (!publicKey) throw new Error('Notifications are not configured on the server.');
-
-      let subscription = await registration.pushManager.getSubscription();
-      if (!subscription) {
-        subscription = await registration.pushManager.subscribe({
-          userVisibleOnly: true,
-          applicationServerKey: decodeKey(publicKey)
-        });
-      }
+      const publicKey = await loadPublicKey();
+      const subscription = await subscribe(registration, publicKey);
       const response = await fetch('/api/push/subscriptions', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -54,7 +44,7 @@
   };
 
   navigator.serviceWorker.register('/service-worker.js').then(async registration => {
-    const subscription = await registration.pushManager.getSubscription();
+    let subscription = await registration.pushManager.getSubscription();
     if (subscription && Notification.permission === 'granted') {
       showEnabled();
     }

@@ -5,6 +5,7 @@ from base64 import urlsafe_b64encode
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
+from threading import Lock
 from urllib import error, request as urllib_request
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -27,6 +28,8 @@ DEFAULT_SETTINGS = {
         {"username": "frontdesk", "password": "changeme", "role": "front_desk", "email": "", "force_password_change": False},
     ]
 }
+
+_vapid_key_creation_lock = Lock()
 
 
 class Store:
@@ -260,6 +263,7 @@ def create_app() -> Flask:
                     vapid_private_key=private_key,
                     vapid_claims={"sub": app.config["VAPID_CLAIMS_EMAIL"]},
                     timeout=10,
+                    ttl=86400,
                 )
             except WebPushException as exc:
                 status_code = getattr(getattr(exc, "response", None), "status_code", None)

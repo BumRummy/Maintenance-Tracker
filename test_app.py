@@ -133,6 +133,7 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertEqual(response.status_code, 302)
             send_push.assert_called_once()
             self.assertIn("Room 305", send_push.call_args.kwargs["data"])
+            self.assertEqual(send_push.call_args.kwargs["ttl"], 86400)
 
 
 if __name__ == "__main__":
