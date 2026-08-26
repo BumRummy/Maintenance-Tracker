@@ -1,0 +1,13 @@
+{
+  "name": "HCK Maintenance Tracker",
+  "short_name": "HCK Maintenance",
+  "description": "Create and manage hotel maintenance requests.",
+  "start_url": "/dashboard",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#f0f2f5",
+  "theme_color": "#1e293b",
+  "icons": [
+    {"src": "/static/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"}
+  ]
+}
