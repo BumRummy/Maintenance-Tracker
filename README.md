@@ -25,6 +25,7 @@ docker compose up --build
 | `CONFIG_PATH` | Config directory inside container | `/config` |
 | `RESEND_API_KEY` | API key used to send password-reset emails through Resend | *(empty)* |
 | `RESEND_FROM` | Sender for password-reset emails | `noreply@bmiMaintenance.com` |
+| `TZ` | IANA timezone used to display issue timestamps (for example, `America/Detroit`) | `UTC` |
 | `CONFIG_LOCATION` | Host path mounted to `CONFIG_PATH` | `./config` |
 | `PUID` | Desired user id ownership for config directory | `1000` |
 | `PGID` | Desired group id ownership for config directory | `1000` |

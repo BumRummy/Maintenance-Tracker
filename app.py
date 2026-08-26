@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from urllib import error, request as urllib_request
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from flask import Flask, flash, redirect, render_template, request, session, url_for
@@ -100,12 +101,24 @@ def create_app() -> Flask:
     app.config["RESEND_API_KEY"] = os.getenv("RESEND_API_KEY", "")
     app.config["RESEND_FROM"] = os.getenv("RESEND_FROM", "noreply@bmiMaintenance.com")
 
+    timezone_name = os.getenv("TZ", "UTC").strip() or "UTC"
+    try:
+        display_timezone = ZoneInfo(timezone_name)
+    except ZoneInfoNotFoundError:
+        app.logger.warning("Unknown TZ %r; displaying dates in UTC.", timezone_name)
+        display_timezone = timezone.utc
+
     @app.template_filter("fmtdate")
     def fmt_date(value):
         if not value:
             return "—"
         try:
             dt = datetime.fromisoformat(str(value))
+            # Stored issue timestamps are UTC. Treat timestamps from older data
+            # that lack an offset as UTC before converting them for display.
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.astimezone(display_timezone)
             return dt.strftime("%b %d %Y %H:%M")
         except (ValueError, AttributeError):
             return str(value)[:10]
@@ -358,7 +371,7 @@ def create_app() -> Flask:
 
     @app.post("/issues")
     def create_issue():
-        guard = _require(roles=("front_desk", "admin"))
+        guard = _require(roles=("front_desk", "maintenance", "admin"))
         if guard:
             return guard
         room = request.form.get("room", "").strip()
