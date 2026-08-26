@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
 from app import create_app
@@ -79,6 +80,28 @@ class MaintenanceIssueTests(unittest.TestCase):
             saved = app.config["STORE"].load_push_subscriptions()
             self.assertEqual(saved[0]["username"], "maintenance")
             self.assertEqual(saved[0]["subscription"], subscription)
+
+    def test_push_config_automatically_creates_and_reuses_vapid_keys(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session["user"] = "maintenance"
+                session["role"] = "maintenance"
+
+            first_public_key = client.get("/api/push/config").get_json()["publicKey"]
+            second_app = self.make_app(config_path)
+
+            self.assertTrue(first_public_key)
+            self.assertEqual(second_app.config["VAPID_PUBLIC_KEY"], first_public_key)
+            self.assertTrue(Path(config_path, "vapid_private.pem").is_file())
+
+    def test_enabled_notification_control_uses_bell_icon(self):
+        script = Path("static/push-notifications.js").read_text(encoding="utf-8")
+
+        self.assertIn("Notifications enabled", script)
+        self.assertIn("<svg", script)
+        self.assertIn("showEnabled();", script)
 
     def test_creating_issue_sends_push_to_maintenance_subscription(self):
         with tempfile.TemporaryDirectory() as config_path:

@@ -1,6 +1,7 @@
 import json
 import os
 import uuid
+from base64 import urlsafe_b64encode
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -9,6 +10,8 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
 from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from cryptography.hazmat.primitives import serialization
+from py_vapid import Vapid
 from pywebpush import WebPushException, webpush
 
 DEFAULT_SETTINGS = {
@@ -32,6 +35,7 @@ class Store:
         self.settings_file = self.config_dir / "settings.json"
         self.issues_file = self.config_dir / "issues.json"
         self.push_subscriptions_file = self.config_dir / "push_subscriptions.json"
+        self.vapid_private_key_file = self.config_dir / "vapid_private.pem"
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
     def _write(self, path: Path, data) -> None:
@@ -86,6 +90,16 @@ class Store:
         if len(remaining) != len(subscriptions):
             self._write(self.push_subscriptions_file, remaining)
 
+    def load_or_create_vapid_keys(self) -> tuple[Vapid, str]:
+        """Return a persistent VAPID key pair for push notifications."""
+        vapid = Vapid.from_file(str(self.vapid_private_key_file))
+        self.vapid_private_key_file.chmod(0o600)
+        public_key = vapid.public_key.public_bytes(
+            serialization.Encoding.X962,
+            serialization.PublicFormat.UncompressedPoint,
+        )
+        return vapid, urlsafe_b64encode(public_key).rstrip(b"=").decode("ascii")
+
     def add_issue(self, room: str, description: str, created_by: str) -> dict:
         issues = self.load_issues()
         issue = {
@@ -124,8 +138,14 @@ def create_app() -> Flask:
     app.config["STORE"] = store
     app.config["RESEND_API_KEY"] = os.getenv("RESEND_API_KEY", "")
     app.config["RESEND_FROM"] = os.getenv("RESEND_FROM", "noreply@bmiMaintenance.com")
-    app.config["VAPID_PUBLIC_KEY"] = os.getenv("VAPID_PUBLIC_KEY", "").strip()
-    app.config["VAPID_PRIVATE_KEY"] = os.getenv("VAPID_PRIVATE_KEY", "").strip()
+    vapid_public_key = os.getenv("VAPID_PUBLIC_KEY", "").strip()
+    vapid_private_key = os.getenv("VAPID_PRIVATE_KEY", "").strip()
+    if not (vapid_public_key and vapid_private_key):
+        if vapid_public_key or vapid_private_key:
+            app.logger.warning("Ignoring incomplete VAPID environment configuration and using the persisted key pair.")
+        vapid_private_key, vapid_public_key = store.load_or_create_vapid_keys()
+    app.config["VAPID_PUBLIC_KEY"] = vapid_public_key
+    app.config["VAPID_PRIVATE_KEY"] = vapid_private_key
     app.config["VAPID_CLAIMS_EMAIL"] = os.getenv("VAPID_CLAIMS_EMAIL", "mailto:admin@example.com").strip()
 
     timezone_name = os.getenv("TZ", "UTC").strip() or "UTC"
