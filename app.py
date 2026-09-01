@@ -15,18 +15,21 @@ from cryptography.hazmat.primitives import serialization
 from py_vapid import Vapid
 from pywebpush import WebPushException, webpush
 
+DEFAULT_LOCATION = "HCK"
+
 DEFAULT_SETTINGS = {
+    "locations": [DEFAULT_LOCATION],
     "users": [
-        {"username": "admin", "password": "admin123", "role": "admin", "email": "", "location": "Default Hotel", "force_password_change": False},
+        {"username": "admin", "password": "admin123", "role": "admin", "email": "", "location": DEFAULT_LOCATION, "force_password_change": False},
         {
             "username": "maintenance",
             "password": "changeme",
             "role": "maintenance",
             "email": "",
-            "location": "Default Hotel",
+            "location": DEFAULT_LOCATION,
             "force_password_change": False,
         },
-        {"username": "frontdesk", "password": "changeme", "role": "front_desk", "email": "", "location": "Default Hotel", "force_password_change": False},
+        {"username": "frontdesk", "password": "changeme", "role": "front_desk", "email": "", "location": DEFAULT_LOCATION, "force_password_change": False},
     ]
 }
 
@@ -128,7 +131,7 @@ class Store:
             if (
                 issue["id"] == issue_id
                 and issue["status"] == "open"
-                and (location is None or issue.get("location", "Default Hotel") == location)
+                and (location is None or issue.get("location", DEFAULT_LOCATION) == location)
             ):
                 issue["status"] = "closed"
                 issue["closed_at"] = datetime.now(timezone.utc).isoformat()
@@ -188,13 +191,31 @@ def create_app() -> Flask:
         return None
 
     def _normalize_users(settings: dict) -> bool:
+        """Add location configuration and fields required by older settings files."""
         changed = False
+        locations = []
+        for location in settings.get("locations", []):
+            cleaned_location = str(location).strip()
+            if cleaned_location and cleaned_location.casefold() not in {item.casefold() for item in locations}:
+                locations.append(cleaned_location)
+        if not locations:
+            locations.append(DEFAULT_LOCATION)
+        if DEFAULT_LOCATION.casefold() not in {item.casefold() for item in locations}:
+            locations.insert(0, DEFAULT_LOCATION)
+
         for user in settings.get("users", []):
             if "email" not in user:
                 user["email"] = ""
                 changed = True
             if not user.get("location"):
-                user["location"] = "Default Hotel"
+                user["location"] = DEFAULT_LOCATION
+                changed = True
+            elif user["location"] == "Default Hotel":
+                # Migrate the original default assignment to the new HCK default.
+                user["location"] = DEFAULT_LOCATION
+                changed = True
+            if user["location"].casefold() not in {item.casefold() for item in locations}:
+                locations.append(user["location"])
                 changed = True
             if "force_password_change" not in user:
                 user["force_password_change"] = False
@@ -205,6 +226,9 @@ def create_app() -> Flask:
             if "reset_expires_at" not in user:
                 user["reset_expires_at"] = None
                 changed = True
+        if settings.get("locations") != locations:
+            settings["locations"] = locations
+            changed = True
         return changed
 
     def _current_user() -> dict | None:
@@ -278,7 +302,7 @@ def create_app() -> Flask:
         for item in store.load_push_subscriptions():
             if item.get("role") not in ("maintenance", "admin"):
                 continue
-            if item.get("location", "Default Hotel") != issue["location"]:
+            if item.get("location", DEFAULT_LOCATION) != issue["location"]:
                 continue
             subscription = item.get("subscription", {})
             try:
@@ -465,7 +489,7 @@ def create_app() -> Flask:
         if not location:
             session.clear()
             return redirect(url_for("login"))
-        issues = [issue for issue in store.load_issues() if issue.get("location", "Default Hotel") == location]
+        issues = [issue for issue in store.load_issues() if issue.get("location", DEFAULT_LOCATION) == location]
         open_issues = sorted(
             (i for i in issues if i["status"] == "open"),
             key=lambda x: x["created_at"],
@@ -495,7 +519,7 @@ def create_app() -> Flask:
         if not location:
             session.clear()
             return redirect(url_for("login"))
-        issues = [issue for issue in store.load_issues() if issue.get("location", "Default Hotel") == location]
+        issues = [issue for issue in store.load_issues() if issue.get("location", DEFAULT_LOCATION) == location]
         closed = sorted(
             (i for i in issues if i["status"] == "closed"),
             key=lambda x: x.get("closed_at", ""),
@@ -569,8 +593,10 @@ def create_app() -> Flask:
                 email = request.form.get("email", "").strip().lower()
                 role = request.form.get("role", "").strip()
                 location = request.form.get("location", "").strip()
-                if not username or not password or not email or not location or role not in ("maintenance", "front_desk"):
+                if not username or not password or not email or role not in ("maintenance", "front_desk"):
                     flash("Username, email, password, location, and valid role are required.", "error")
+                elif location not in settings["locations"]:
+                    flash("Select a configured location.", "error")
                 elif any(u["username"].lower() == username for u in settings["users"]):
                     flash("Username already exists.", "error")
                 else:
@@ -590,11 +616,23 @@ def create_app() -> Flask:
                     flash(f"User '{username}' added.", "success")
                 return redirect(url_for("admin"))
 
+            if action == "add_location":
+                location = request.form.get("location", "").strip()
+                if not location:
+                    flash("Location name is required.", "error")
+                elif any(existing.casefold() == location.casefold() for existing in settings["locations"]):
+                    flash("That location already exists.", "error")
+                else:
+                    settings["locations"].append(location)
+                    store.save_settings(settings)
+                    flash(f"Location '{location}' added.", "success")
+                return redirect(url_for("admin"))
+
             if action == "change_location":
                 username = request.form.get("username", "").strip()
                 location = request.form.get("location", "").strip()
-                if not location:
-                    flash("Location is required.", "error")
+                if location not in settings["locations"]:
+                    flash("Select a configured location.", "error")
                 else:
                     user = next((u for u in settings["users"] if u["username"] == username), None)
                     if not user:
@@ -629,7 +667,7 @@ def create_app() -> Flask:
                     flash(f"Password updated for '{username}'.", "success")
                 return redirect(url_for("admin"))
 
-        return render_template("admin.html", users=settings["users"])
+        return render_template("admin.html", users=settings["users"], locations=settings["locations"])
 
     return app
 

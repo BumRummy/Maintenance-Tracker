@@ -1,8 +1,18 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="page-header">
-  <h1>User Management</h1>
+  <h1>Administration</h1>
 </div>
+
+<section class="card">
+  <h2 style="margin:0 0 .5rem;font-size:1rem;color:#475569;">Locations</h2>
+  <form method="post" class="inline-form">
+    <input type="hidden" name="action" value="add_location">
+    <label>New Location <input name="location" required placeholder="e.g. Downtown Hotel"></label>
+    <button type="submit" class="btn-primary">Add Location</button>
+  </form>
+  <p class="location-list"><strong>Available locations:</strong> {{ locations | join(', ') }}</p>
+</section>
 
 <section class="card">
   <h2 style="margin:0 0 .5rem;font-size:1rem;color:#475569;">Add User</h2>
@@ -17,7 +27,13 @@
         <option value="maintenance">Maintenance</option>
       </select>
     </label>
-    <label>Location <input name="location" required placeholder="e.g. Downtown Hotel"></label>
+    <label>Location
+      <select name="location" required>
+        {% for location in locations %}
+        <option value="{{ location }}" {% if location == 'HCK' %}selected{% endif %}>{{ location }}</option>
+        {% endfor %}
+      </select>
+    </label>
     <button type="submit" class="btn-primary">Add User</button>
   </form>
 </section>
@@ -44,7 +60,11 @@
           <form method="post" class="inline-form">
             <input type="hidden" name="action" value="change_location">
             <input type="hidden" name="username" value="{{ user.username }}">
-            <input name="location" value="{{ user.location }}" required aria-label="Location for {{ user.username }}" style="font-size:.875rem;padding:.35rem .6rem;">
+            <select name="location" required aria-label="Location for {{ user.username }}" style="font-size:.875rem;padding:.35rem .6rem;">
+              {% for location in locations %}
+              <option value="{{ location }}" {% if location == user.location %}selected{% endif %}>{{ location }}</option>
+              {% endfor %}
+            </select>
             <button type="submit" style="font-size:.875rem;padding:.35rem .7rem;">Update</button>
           </form>
         </td>

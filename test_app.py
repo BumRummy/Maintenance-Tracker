@@ -40,6 +40,37 @@ class MaintenanceIssueTests(unittest.TestCase):
             manifest_response.close()
             icon_response.close()
 
+    def test_admin_can_add_locations_and_assign_users_from_the_location_list(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session["user"] = "admin"
+                session["role"] = "admin"
+
+            response = client.post("/admin", data={"action": "add_location", "location": "Downtown"})
+            self.assertEqual(response.status_code, 302)
+            self.assertEqual(app.config["STORE"].load_settings()["locations"], ["HCK", "Downtown"])
+
+            response = client.post(
+                "/admin",
+                data={
+                    "action": "add_user",
+                    "username": "downtown-desk",
+                    "email": "desk@example.com",
+                    "password": "password",
+                    "role": "front_desk",
+                    "location": "Downtown",
+                },
+            )
+            self.assertEqual(response.status_code, 302)
+            user = next(user for user in app.config["STORE"].load_settings()["users"] if user["username"] == "downtown-desk")
+            self.assertEqual(user["location"], "Downtown")
+
+            admin_page = client.get("/admin")
+            self.assertIn(b'<option value="HCK" selected>HCK</option>', admin_page.data)
+            self.assertIn(b'<option value="Downtown" selected>Downtown</option>', admin_page.data)
+
     def test_maintenance_user_can_open_form_and_create_issue(self):
         with tempfile.TemporaryDirectory() as config_path:
             app = self.make_app(config_path)
@@ -121,7 +152,7 @@ class MaintenanceIssueTests(unittest.TestCase):
                 {"endpoint": "https://push.example/subscription", "keys": {"p256dh": "key", "auth": "secret"}},
                 "maintenance",
                 "maintenance",
-                "Default Hotel",
+                "HCK",
             )
             client = app.test_client()
             with client.session_transaction() as session:
