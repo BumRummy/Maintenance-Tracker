@@ -286,6 +286,37 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertIn(b"HCK issue", report.data)
             self.assertNotIn(b"Downtown issue", report.data)
 
+    def test_supervisor_csv_reports_are_scoped_to_exact_hotel_names(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            store = app.config["STORE"]
+            settings = store.load_settings()
+            settings["locations"] = ["HCK", "HCK2"]
+            settings["users"].extend(
+                [
+                    {"username": "hck-supervisor", "password": "password", "role": "supervisor", "email": "", "location": "HCK"},
+                    {"username": "hck2-supervisor", "password": "password", "role": "supervisor", "email": "", "location": "HCK2"},
+                ]
+            )
+            store.save_settings(settings)
+            store.add_issue("101", "HCK-only issue", "frontdesk", "HCK")
+            store.add_issue("201", "HCK2-only issue", "frontdesk", "HCK2")
+            client = app.test_client()
+
+            for username, expected_issue, excluded_issue in (
+                ("hck-supervisor", b"HCK-only issue", b"HCK2-only issue"),
+                ("hck2-supervisor", b"HCK2-only issue", b"HCK-only issue"),
+            ):
+                with client.session_transaction() as session:
+                    session["user"] = username
+                    session["role"] = "supervisor"
+
+                report = client.get("/supervisor/report.csv")
+
+                self.assertEqual(report.status_code, 200)
+                self.assertIn(expected_issue, report.data)
+                self.assertNotIn(excluded_issue, report.data)
+
 
 if __name__ == "__main__":
     unittest.main()
