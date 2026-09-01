@@ -646,6 +646,23 @@ def create_app() -> Flask:
                         flash(f"Location updated for '{username}'.", "success")
                 return redirect(url_for("admin"))
 
+            if action == "change_role":
+                username = request.form.get("username", "").strip()
+                role = request.form.get("role", "").strip()
+                if role not in ("maintenance", "front_desk", "supervisor"):
+                    flash("Select a valid role.", "error")
+                else:
+                    user = next((u for u in settings["users"] if u["username"] == username), None)
+                    if not user:
+                        flash("User was not found.", "error")
+                    elif user["role"] == "admin":
+                        flash("Admin roles cannot be changed.", "error")
+                    else:
+                        user["role"] = role
+                        store.save_settings(settings)
+                        flash(f"Role updated for '{username}'.", "success")
+                return redirect(url_for("admin"))
+
             if action == "delete_user":
                 username = request.form.get("username", "").strip()
                 if username == session["user"]:
