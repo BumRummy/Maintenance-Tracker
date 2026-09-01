@@ -22,6 +22,9 @@
       {% elif session.role == 'front_desk' %}
         <a href="{{ url_for('dashboard') }}">Dashboard</a>
         <a href="{{ url_for('history') }}">History</a>
+      {% elif session.role == 'supervisor' %}
+        <a href="{{ url_for('dashboard') }}">Dashboard</a>
+        <a href="{{ url_for('history') }}">History</a>
       {% elif session.role == 'admin' %}
         <a href="{{ url_for('admin') }}">Users</a>
         <a href="{{ url_for('history') }}">History</a>

@@ -20,6 +20,10 @@ a { color: #2563eb; }
 .container { max-width: 1100px; margin: 2rem auto; padding: 1rem; }
 .page-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.5rem; flex-wrap: wrap; gap: .75rem; }
 .page-header h1 { margin: 0; font-size: 1.4rem; color: #1e293b; display: flex; align-items: center; gap: .6rem; }
+.page-subtitle { margin: .35rem 0 0; color: #64748b; }
+.dashboard-actions { display: flex; align-items: center; gap: .65rem; }
+.settings-button { width: 2.25rem; height: 2.25rem; display: inline-flex; align-items: center; justify-content: center; border: 1px solid #cbd5e1; border-radius: 50%; background: #fff; color: #475569; text-decoration: none; font-size: 1.35rem; line-height: 1; }
+.settings-button:hover { color: #1d4ed8; background: #eff6ff; border-color: #93c5fd; }
 .count-badge { background: #3b82f6; color: #fff; font-size: .75rem; font-weight: bold; padding: .2rem .55rem; border-radius: 99px; vertical-align: middle; }
 .section-title { font-size: 1.1rem; font-weight: 600; color: #475569; margin: 2rem 0 .75rem; border-bottom: 2px solid #e2e8f0; padding-bottom: .4rem; display: flex; align-items: center; gap: .5rem; }
 .login-wrap { max-width: 380px; margin: 5rem auto; }
@@ -27,6 +31,10 @@ a { color: #2563eb; }
 
 /* Cards (forms/admin) */
 .card { background: #fff; padding: 1.2rem; border-radius: 10px; display: grid; gap: .75rem; margin-bottom: 1rem; box-shadow: 0 1px 4px rgba(0,0,0,.07); }
+.card > .btn-primary { justify-self: start; }
+.card h2 { margin: 0; font-size: 1rem; color: #475569; }
+.card-copy { margin: 0; color: #64748b; font-size: .92rem; }
+.report-summary { display: flex; flex-wrap: wrap; gap: .75rem 1.5rem; color: #475569; }
 
 /* Flash */
 .flash { margin-bottom: .75rem; padding: .6rem .9rem; border-radius: 8px; font-size: .95rem; }
@@ -103,3 +111,7 @@ button:hover { background: #e2e8f0; }
 .role-pill.admin { background: #fef3c7; color: #92400e; }
 .role-pill.maintenance { background: #dbeafe; color: #1e40af; }
 .role-pill.front_desk { background: #f3e8ff; color: #6b21a8; }
+.role-pill.supervisor { background: #dcfce7; color: #166534; }
+.table-scroll { overflow-x: auto; }
+.compact-form { gap: .5rem; }
+.self-label { font-size: .8rem; color: #94a3b8; }
