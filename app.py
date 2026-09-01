@@ -1,6 +1,8 @@
+import csv
 import json
 import os
 import uuid
+from io import StringIO
 from base64 import urlsafe_b64encode
 from copy import deepcopy
 from datetime import datetime, timezone, timedelta
@@ -10,7 +12,7 @@ from urllib import error, request as urllib_request
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import requests
-from flask import Flask, flash, jsonify, redirect, render_template, request, session, url_for
+from flask import Flask, Response, flash, jsonify, redirect, render_template, request, session, url_for
 from cryptography.hazmat.primitives import serialization
 from py_vapid import Vapid
 from pywebpush import WebPushException, webpush
@@ -30,6 +32,7 @@ DEFAULT_SETTINGS = {
             "force_password_change": False,
         },
         {"username": "frontdesk", "password": "changeme", "role": "front_desk", "email": "", "location": DEFAULT_LOCATION, "force_password_change": False},
+        {"username": "supervisor", "password": "changeme", "role": "supervisor", "email": "", "location": DEFAULT_LOCATION, "force_password_change": False},
     ]
 }
 
@@ -512,7 +515,7 @@ def create_app() -> Flask:
 
     @app.get("/history")
     def history():
-        guard = _require(roles=("maintenance", "front_desk", "admin"))
+        guard = _require(roles=("maintenance", "front_desk", "supervisor", "admin"))
         if guard:
             return guard
         location = _location_for_current_user()
@@ -541,7 +544,7 @@ def create_app() -> Flask:
 
     @app.post("/issues")
     def create_issue():
-        guard = _require(roles=("front_desk", "maintenance", "admin"))
+        guard = _require(roles=("front_desk", "supervisor", "maintenance", "admin"))
         if guard:
             return guard
         room = request.form.get("room", "").strip()
@@ -593,7 +596,7 @@ def create_app() -> Flask:
                 email = request.form.get("email", "").strip().lower()
                 role = request.form.get("role", "").strip()
                 location = request.form.get("location", "").strip()
-                if not username or not password or not email or role not in ("maintenance", "front_desk"):
+                if not username or not password or not email or role not in ("maintenance", "front_desk", "supervisor"):
                     flash("Username, email, password, location, and valid role are required.", "error")
                 elif location not in settings["locations"]:
                     flash("Select a configured location.", "error")
@@ -668,6 +671,114 @@ def create_app() -> Flask:
                 return redirect(url_for("admin"))
 
         return render_template("admin.html", users=settings["users"], locations=settings["locations"])
+
+    @app.route("/supervisor", methods=["GET", "POST"])
+    def supervisor():
+        """Manage the current location's non-admin accounts and maintenance reports."""
+        guard = _require(roles=("supervisor",))
+        if guard:
+            return guard
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return redirect(url_for("login"))
+        settings = store.load_settings()
+        if _normalize_users(settings):
+            store.save_settings(settings)
+
+        if request.method == "POST":
+            action = request.form.get("action")
+            username = request.form.get("username", "").strip().lower()
+            managed_user = next(
+                (
+                    user for user in settings["users"]
+                    if user["username"].lower() == username
+                    and user.get("location") == location
+                    and user.get("role") != "admin"
+                ),
+                None,
+            )
+            if action == "add_user":
+                password = request.form.get("password", "").strip()
+                email = request.form.get("email", "").strip().lower()
+                role = request.form.get("role", "").strip()
+                if not username or not password or not email or role not in ("maintenance", "front_desk", "supervisor"):
+                    flash("Username, email, password, and a valid role are required.", "error")
+                elif any(user["username"].lower() == username for user in settings["users"]):
+                    flash("Username already exists.", "error")
+                else:
+                    settings["users"].append(
+                        {
+                            "username": username,
+                            "email": email,
+                            "password": password,
+                            "role": role,
+                            "location": location,
+                            "force_password_change": True,
+                            "reset_token": None,
+                            "reset_expires_at": None,
+                        }
+                    )
+                    store.save_settings(settings)
+                    flash(f"User '{username}' added to {location}.", "success")
+            elif action == "change_password":
+                new_password = request.form.get("new_password", "").strip()
+                if not managed_user:
+                    flash("User was not found at your location.", "error")
+                elif not new_password:
+                    flash("New password required.", "error")
+                else:
+                    managed_user["password"] = new_password
+                    managed_user["force_password_change"] = True
+                    store.save_settings(settings)
+                    flash(f"Password reset for '{managed_user['username']}'.", "success")
+            elif action == "delete_user":
+                if not managed_user:
+                    flash("User was not found at your location.", "error")
+                elif managed_user["username"] == session["user"]:
+                    flash("Cannot delete your own account.", "error")
+                else:
+                    settings["users"].remove(managed_user)
+                    store.save_settings(settings)
+                    flash(f"User '{managed_user['username']}' deleted.", "success")
+            return redirect(url_for("supervisor"))
+
+        users = [
+            user
+            for user in settings["users"]
+            if user.get("location") == location and user.get("role") != "admin"
+        ]
+        issues = [issue for issue in store.load_issues() if issue.get("location", DEFAULT_LOCATION) == location]
+        return render_template("supervisor.html", users=users, location=location, issues=issues)
+
+    @app.get("/supervisor/report.csv")
+    def supervisor_report_csv():
+        guard = _require(roles=("supervisor",))
+        if guard:
+            return guard
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return redirect(url_for("login"))
+        output = StringIO()
+        writer = csv.writer(output)
+        writer.writerow(["Room", "Description", "Status", "Reported", "Reported by", "Resolved", "Resolved by", "Resolution"])
+        issues = sorted(
+            (item for item in store.load_issues() if item.get("location", DEFAULT_LOCATION) == location),
+            key=lambda item: item["created_at"],
+        )
+        for issue in issues:
+            writer.writerow(
+                [
+                    issue["room"], issue["description"], issue["status"], issue["created_at"], issue["created_by"],
+                    issue.get("closed_at") or "", issue.get("closed_by") or "", issue.get("resolution") or "",
+                ]
+            )
+        return Response(
+            output.getvalue(),
+            mimetype="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="{location}-maintenance-report.csv"'},
+        )
 
     return app
 

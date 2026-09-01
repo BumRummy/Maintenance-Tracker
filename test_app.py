@@ -206,6 +206,50 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertIn(b"North-only issue", history.data)
             self.assertNotIn(b"South-only issue", history.data)
 
+    def test_supervisor_can_manage_only_local_non_admin_users_and_download_reports(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            store = app.config["STORE"]
+            settings = store.load_settings()
+            settings["locations"] = ["HCK", "Downtown"]
+            settings["users"].extend(
+                [
+                    {"username": "local-supervisor", "password": "password", "role": "supervisor", "email": "", "location": "HCK"},
+                    {"username": "downtown-desk", "password": "password", "role": "front_desk", "email": "", "location": "Downtown"},
+                ]
+            )
+            store.save_settings(settings)
+            store.add_issue("101", "HCK issue", "frontdesk", "HCK")
+            store.add_issue("201", "Downtown issue", "downtown-desk", "Downtown")
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session["user"] = "local-supervisor"
+                session["role"] = "supervisor"
+
+            dashboard = client.get("/dashboard")
+            self.assertIn(b'aria-label="Supervisor settings"', dashboard.data)
+            page = client.get("/supervisor")
+            self.assertIn(b"Managing users and reports for HCK.", page.data)
+            self.assertNotIn(b"downtown-desk", page.data)
+
+            response = client.post(
+                "/supervisor",
+                data={"action": "add_user", "username": "new-desk", "email": "desk@example.com", "password": "password", "role": "front_desk"},
+            )
+            self.assertEqual(response.status_code, 302)
+            new_user = next(user for user in store.load_settings()["users"] if user["username"] == "new-desk")
+            self.assertEqual(new_user["location"], "HCK")
+
+            response = client.post("/supervisor", data={"action": "delete_user", "username": "downtown-desk"}, follow_redirects=True)
+            self.assertIn(b"User was not found at your location.", response.data)
+            self.assertTrue(any(user["username"] == "downtown-desk" for user in store.load_settings()["users"]))
+
+            report = client.get("/supervisor/report.csv")
+            self.assertEqual(report.status_code, 200)
+            self.assertEqual(report.mimetype, "text/csv")
+            self.assertIn(b"HCK issue", report.data)
+            self.assertNotIn(b"Downtown issue", report.data)
+
 
 if __name__ == "__main__":
     unittest.main()

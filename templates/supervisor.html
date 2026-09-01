@@ -1,0 +1,77 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="page-header">
+  <div>
+    <h1>Supervisor Settings</h1>
+    <p class="page-subtitle">Managing users and reports for {{ location }}.</p>
+  </div>
+  <a class="btn-primary" href="{{ url_for('dashboard') }}">Back to dashboard</a>
+</div>
+
+<section class="card">
+  <h2>Generate Report</h2>
+  <p class="card-copy">Download a complete maintenance report for {{ location }}. It includes open and resolved issues, report dates, and resolutions.</p>
+  <div class="report-summary">
+    <span><strong>{{ issues | length }}</strong> total issues</span>
+    <span><strong>{{ issues | selectattr('status', 'equalto', 'open') | list | length }}</strong> open</span>
+    <span><strong>{{ issues | selectattr('status', 'equalto', 'closed') | list | length }}</strong> resolved</span>
+  </div>
+  <a class="btn-primary" href="{{ url_for('supervisor_report_csv') }}">Download CSV Report</a>
+</section>
+
+<section class="card">
+  <h2>Add User</h2>
+  <form method="post" class="inline-form">
+    <input type="hidden" name="action" value="add_user">
+    <label>Username <input name="username" required></label>
+    <label>Email <input type="email" name="email" required placeholder="user@example.com"></label>
+    <label>Password <input type="password" name="password" required></label>
+    <label>Role
+      <select name="role">
+        <option value="front_desk">Front Desk</option>
+        <option value="maintenance">Maintenance</option>
+        <option value="supervisor">Supervisor</option>
+      </select>
+    </label>
+    <button type="submit" class="btn-primary">Add User</button>
+  </form>
+  <p class="card-copy">New users are automatically assigned to {{ location }} and must change their password at first sign-in.</p>
+</section>
+
+<section class="card">
+  <h2>Users at {{ location }}</h2>
+  <div class="table-scroll">
+    <table class="user-table">
+      <thead><tr><th>Username</th><th>Email</th><th>Role</th><th>Reset Password</th><th></th></tr></thead>
+      <tbody>
+        {% for user in users %}
+        <tr>
+          <td><strong>{{ user.username }}</strong></td>
+          <td>{{ user.email or '—' }}</td>
+          <td><span class="role-pill {{ user.role }}">{{ user.role | replace('_', ' ') | title }}</span></td>
+          <td>
+            <form method="post" class="inline-form compact-form">
+              <input type="hidden" name="action" value="change_password">
+              <input type="hidden" name="username" value="{{ user.username }}">
+              <input type="password" name="new_password" required placeholder="New password" aria-label="New password for {{ user.username }}">
+              <button type="submit">Reset</button>
+            </form>
+          </td>
+          <td>
+            {% if user.username != session.user %}
+            <form method="post" onsubmit="return confirm('Delete {{ user.username }}?')">
+              <input type="hidden" name="action" value="delete_user">
+              <input type="hidden" name="username" value="{{ user.username }}">
+              <button type="submit" class="btn-danger">Delete</button>
+            </form>
+            {% else %}<span class="self-label">You</span>{% endif %}
+          </td>
+        </tr>
+        {% else %}
+        <tr><td colspan="5">No non-admin users are assigned to this location.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endblock %}

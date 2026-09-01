@@ -2,7 +2,12 @@
 {% block content %}
 <div class="page-header">
   <h1>Open Issues <span class="count-badge">{{ open_issues | length }}</span></h1>
-  <button class="btn-primary" id="open-modal-btn">+ New Issue</button>
+  <div class="dashboard-actions">
+    {% if session.role == 'supervisor' %}
+    <a class="settings-button" href="{{ url_for('supervisor') }}" aria-label="Supervisor settings" title="Supervisor settings">&#9881;</a>
+    {% endif %}
+    <button class="btn-primary" id="open-modal-btn">+ New Issue</button>
+  </div>
 </div>
 
 <div id="new-issue-modal" class="modal-overlay">
