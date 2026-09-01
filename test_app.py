@@ -121,6 +121,7 @@ class MaintenanceIssueTests(unittest.TestCase):
                 {"endpoint": "https://push.example/subscription", "keys": {"p256dh": "key", "auth": "secret"}},
                 "maintenance",
                 "maintenance",
+                "Default Hotel",
             )
             client = app.test_client()
             with client.session_transaction() as session:
@@ -134,6 +135,45 @@ class MaintenanceIssueTests(unittest.TestCase):
             send_push.assert_called_once()
             self.assertIn("Room 305", send_push.call_args.kwargs["data"])
             self.assertEqual(send_push.call_args.kwargs["ttl"], 86400)
+
+    def test_location_assignment_isolated_for_issues_history_and_closing(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            store = app.config["STORE"]
+            settings = store.load_settings()
+            settings["users"] = [
+                {"username": "north", "password": "password", "role": "maintenance", "email": "", "location": "North Hotel"},
+                {"username": "south", "password": "password", "role": "maintenance", "email": "", "location": "South Hotel"},
+            ]
+            store.save_settings(settings)
+            north_issue = store.add_issue("101", "North-only issue", "north", "North Hotel")
+            south_issue = store.add_issue("201", "South-only issue", "south", "South Hotel")
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session["user"] = "north"
+                session["role"] = "maintenance"
+
+            dashboard = client.get("/dashboard")
+            self.assertIn(b"North-only issue", dashboard.data)
+            self.assertNotIn(b"South-only issue", dashboard.data)
+
+            response = client.post(
+                f"/issues/{south_issue['id']}/close",
+                data={"resolution": "Should not be allowed"},
+                follow_redirects=True,
+            )
+            self.assertIn(b"Issue was not found at your assigned location.", response.data)
+            self.assertEqual(store.load_issues()[1]["status"], "open")
+
+            client.post("/issues", data={"room": "102", "description": "New north issue"})
+            created_issue = store.load_issues()[-1]
+            self.assertEqual(created_issue["location"], "North Hotel")
+            self.assertEqual(north_issue["location"], "North Hotel")
+
+            client.post(f"/issues/{north_issue['id']}/close", data={"resolution": "Fixed at north"})
+            history = client.get("/history")
+            self.assertIn(b"North-only issue", history.data)
+            self.assertNotIn(b"South-only issue", history.data)
 
 
 if __name__ == "__main__":
