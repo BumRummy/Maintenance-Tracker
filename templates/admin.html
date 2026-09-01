@@ -17,6 +17,7 @@
         <option value="maintenance">Maintenance</option>
       </select>
     </label>
+    <label>Location <input name="location" required placeholder="e.g. Downtown Hotel"></label>
     <button type="submit" class="btn-primary">Add User</button>
   </form>
 </section>
@@ -28,6 +29,7 @@
         <th>Username</th>
         <th>Email</th>
         <th>Role</th>
+        <th>Assigned Location</th>
         <th>Change Password</th>
         <th></th>
       </tr>
@@ -38,6 +40,14 @@
         <td><strong>{{ user.username }}</strong></td>
         <td>{{ user.email or "—" }}</td>
         <td><span class="role-pill {{ user.role }}">{{ user.role | replace('_', ' ') | title }}</span></td>
+        <td>
+          <form method="post" class="inline-form">
+            <input type="hidden" name="action" value="change_location">
+            <input type="hidden" name="username" value="{{ user.username }}">
+            <input name="location" value="{{ user.location }}" required aria-label="Location for {{ user.username }}" style="font-size:.875rem;padding:.35rem .6rem;">
+            <button type="submit" style="font-size:.875rem;padding:.35rem .7rem;">Update</button>
+          </form>
+        </td>
         <td>
           <form method="post" class="inline-form">
             <input type="hidden" name="action" value="change_password">

@@ -17,15 +17,16 @@ from pywebpush import WebPushException, webpush
 
 DEFAULT_SETTINGS = {
     "users": [
-        {"username": "admin", "password": "admin123", "role": "admin", "email": "", "force_password_change": False},
+        {"username": "admin", "password": "admin123", "role": "admin", "email": "", "location": "Default Hotel", "force_password_change": False},
         {
             "username": "maintenance",
             "password": "changeme",
             "role": "maintenance",
             "email": "",
+            "location": "Default Hotel",
             "force_password_change": False,
         },
-        {"username": "frontdesk", "password": "changeme", "role": "front_desk", "email": "", "force_password_change": False},
+        {"username": "frontdesk", "password": "changeme", "role": "front_desk", "email": "", "location": "Default Hotel", "force_password_change": False},
     ]
 }
 
@@ -80,11 +81,11 @@ class Store:
         except (OSError, json.JSONDecodeError):
             return []
 
-    def save_push_subscription(self, subscription: dict, username: str, role: str) -> None:
+    def save_push_subscription(self, subscription: dict, username: str, role: str, location: str) -> None:
         subscriptions = self.load_push_subscriptions()
         endpoint = subscription["endpoint"]
         subscriptions = [item for item in subscriptions if item.get("subscription", {}).get("endpoint") != endpoint]
-        subscriptions.append({"username": username, "role": role, "subscription": subscription})
+        subscriptions.append({"username": username, "role": role, "location": location, "subscription": subscription})
         self._write(self.push_subscriptions_file, subscriptions)
 
     def remove_push_subscription(self, endpoint: str) -> None:
@@ -103,7 +104,7 @@ class Store:
         )
         return vapid, urlsafe_b64encode(public_key).rstrip(b"=").decode("ascii")
 
-    def add_issue(self, room: str, description: str, created_by: str) -> dict:
+    def add_issue(self, room: str, description: str, created_by: str, location: str) -> dict:
         issues = self.load_issues()
         issue = {
             "id": str(uuid.uuid4()),
@@ -112,6 +113,7 @@ class Store:
             "status": "open",
             "created_at": datetime.now(timezone.utc).isoformat(),
             "created_by": created_by,
+            "location": location,
             "closed_at": None,
             "closed_by": None,
             "resolution": None,
@@ -120,10 +122,14 @@ class Store:
         self.save_issues(issues)
         return issue
 
-    def close_issue(self, issue_id: str, closed_by: str, resolution: str) -> bool:
+    def close_issue(self, issue_id: str, closed_by: str, resolution: str, location: str | None = None) -> bool:
         issues = self.load_issues()
         for issue in issues:
-            if issue["id"] == issue_id and issue["status"] == "open":
+            if (
+                issue["id"] == issue_id
+                and issue["status"] == "open"
+                and (location is None or issue.get("location", "Default Hotel") == location)
+            ):
                 issue["status"] = "closed"
                 issue["closed_at"] = datetime.now(timezone.utc).isoformat()
                 issue["closed_by"] = closed_by
@@ -187,6 +193,9 @@ def create_app() -> Flask:
             if "email" not in user:
                 user["email"] = ""
                 changed = True
+            if not user.get("location"):
+                user["location"] = "Default Hotel"
+                changed = True
             if "force_password_change" not in user:
                 user["force_password_change"] = False
                 changed = True
@@ -197,6 +206,20 @@ def create_app() -> Flask:
                 user["reset_expires_at"] = None
                 changed = True
         return changed
+
+    def _current_user() -> dict | None:
+        """Load the signed-in user's current assignment from persisted settings."""
+        username = session.get("user")
+        if not username:
+            return None
+        settings = store.load_settings()
+        if _normalize_users(settings):
+            store.save_settings(settings)
+        return next((user for user in settings["users"] if user["username"] == username), None)
+
+    def _location_for_current_user() -> str | None:
+        user = _current_user()
+        return user.get("location") if user else None
 
     def _send_email_via_resend(to_email: str, subject: str, html: str) -> tuple[bool, str]:
         api_key = app.config["RESEND_API_KEY"].strip()
@@ -254,6 +277,8 @@ def create_app() -> Flask:
         )
         for item in store.load_push_subscriptions():
             if item.get("role") not in ("maintenance", "admin"):
+                continue
+            if item.get("location", "Default Hotel") != issue["location"]:
                 continue
             subscription = item.get("subscription", {})
             try:
@@ -419,7 +444,11 @@ def create_app() -> Flask:
         subscription = request.get_json(silent=True) or {}
         if not subscription.get("endpoint") or not subscription.get("keys"):
             return jsonify({"error": "A valid push subscription is required."}), 400
-        store.save_push_subscription(subscription, session["user"], session["role"])
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return jsonify({"error": "Your account is no longer available."}), 403
+        store.save_push_subscription(subscription, session["user"], session["role"], location)
         return jsonify({"ok": True}), 201
 
     @app.get("/dashboard")
@@ -432,7 +461,11 @@ def create_app() -> Flask:
         if role == "admin":
             return redirect(url_for("admin"))
 
-        issues = store.load_issues()
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return redirect(url_for("login"))
+        issues = [issue for issue in store.load_issues() if issue.get("location", "Default Hotel") == location]
         open_issues = sorted(
             (i for i in issues if i["status"] == "open"),
             key=lambda x: x["created_at"],
@@ -458,7 +491,11 @@ def create_app() -> Flask:
         guard = _require(roles=("maintenance", "front_desk", "admin"))
         if guard:
             return guard
-        issues = store.load_issues()
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return redirect(url_for("login"))
+        issues = [issue for issue in store.load_issues() if issue.get("location", "Default Hotel") == location]
         closed = sorted(
             (i for i in issues if i["status"] == "closed"),
             key=lambda x: x.get("closed_at", ""),
@@ -488,7 +525,11 @@ def create_app() -> Flask:
         if not room or not description:
             flash("Room and description are required.", "error")
             return redirect(url_for("dashboard"))
-        issue = store.add_issue(room, description, session["user"])
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return redirect(url_for("login"))
+        issue = store.add_issue(room, description, session["user"], location)
         _send_new_issue_notifications(issue)
         flash(f"Issue submitted for room {room.upper()}.", "success")
         return redirect(url_for("dashboard"))
@@ -502,7 +543,12 @@ def create_app() -> Flask:
         if not resolution:
             flash("Resolution is required before marking an issue complete.", "error")
             return redirect(url_for("dashboard"))
-        store.close_issue(issue_id, session["user"], resolution)
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return redirect(url_for("login"))
+        if not store.close_issue(issue_id, session["user"], resolution, location):
+            flash("Issue was not found at your assigned location.", "error")
         return redirect(url_for("dashboard"))
 
     @app.route("/admin", methods=["GET", "POST"])
@@ -522,8 +568,9 @@ def create_app() -> Flask:
                 password = request.form.get("password", "").strip()
                 email = request.form.get("email", "").strip().lower()
                 role = request.form.get("role", "").strip()
-                if not username or not password or not email or role not in ("maintenance", "front_desk"):
-                    flash("Username, email, password, and valid role are required.", "error")
+                location = request.form.get("location", "").strip()
+                if not username or not password or not email or not location or role not in ("maintenance", "front_desk"):
+                    flash("Username, email, password, location, and valid role are required.", "error")
                 elif any(u["username"].lower() == username for u in settings["users"]):
                     flash("Username already exists.", "error")
                 else:
@@ -533,6 +580,7 @@ def create_app() -> Flask:
                             "email": email,
                             "password": password,
                             "role": role,
+                            "location": location,
                             "force_password_change": True,
                             "reset_token": None,
                             "reset_expires_at": None,
@@ -540,6 +588,21 @@ def create_app() -> Flask:
                     )
                     store.save_settings(settings)
                     flash(f"User '{username}' added.", "success")
+                return redirect(url_for("admin"))
+
+            if action == "change_location":
+                username = request.form.get("username", "").strip()
+                location = request.form.get("location", "").strip()
+                if not location:
+                    flash("Location is required.", "error")
+                else:
+                    user = next((u for u in settings["users"] if u["username"] == username), None)
+                    if not user:
+                        flash("User was not found.", "error")
+                    else:
+                        user["location"] = location
+                        store.save_settings(settings)
+                        flash(f"Location updated for '{username}'.", "success")
                 return redirect(url_for("admin"))
 
             if action == "delete_user":
