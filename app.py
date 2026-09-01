@@ -248,6 +248,18 @@ def create_app() -> Flask:
         user = _current_user()
         return user.get("location") if user else None
 
+    def _issues_for_location(location: str) -> list[dict]:
+        """Return only issues assigned to one exact hotel location.
+
+        Location names are identifiers, not prefixes: for example, a report for
+        ``HCK`` must not include issues assigned to ``HCK2``.
+        """
+        return [
+            issue
+            for issue in store.load_issues()
+            if issue.get("location", DEFAULT_LOCATION) == location
+        ]
+
     def _send_email_via_resend(to_email: str, subject: str, html: str) -> tuple[bool, str]:
         api_key = app.config["RESEND_API_KEY"].strip()
         if not api_key:
@@ -492,7 +504,7 @@ def create_app() -> Flask:
         if not location:
             session.clear()
             return redirect(url_for("login"))
-        issues = [issue for issue in store.load_issues() if issue.get("location", DEFAULT_LOCATION) == location]
+        issues = _issues_for_location(location)
         open_issues = sorted(
             (i for i in issues if i["status"] == "open"),
             key=lambda x: x["created_at"],
@@ -522,7 +534,7 @@ def create_app() -> Flask:
         if not location:
             session.clear()
             return redirect(url_for("login"))
-        issues = [issue for issue in store.load_issues() if issue.get("location", DEFAULT_LOCATION) == location]
+        issues = _issues_for_location(location)
         closed = sorted(
             (i for i in issues if i["status"] == "closed"),
             key=lambda x: x.get("closed_at", ""),
@@ -765,7 +777,7 @@ def create_app() -> Flask:
             for user in settings["users"]
             if user.get("location") == location and user.get("role") != "admin"
         ]
-        issues = [issue for issue in store.load_issues() if issue.get("location", DEFAULT_LOCATION) == location]
+        issues = _issues_for_location(location)
         return render_template("supervisor.html", users=users, location=location, issues=issues)
 
     @app.get("/supervisor/report.csv")
@@ -781,7 +793,7 @@ def create_app() -> Flask:
         writer = csv.writer(output)
         writer.writerow(["Room", "Description", "Status", "Reported", "Reported by", "Resolved", "Resolved by", "Resolution"])
         issues = sorted(
-            (item for item in store.load_issues() if item.get("location", DEFAULT_LOCATION) == location),
+            _issues_for_location(location),
             key=lambda item: item["created_at"],
         )
         for issue in issues:
