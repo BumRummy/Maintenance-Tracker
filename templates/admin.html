@@ -56,7 +56,22 @@
       <tr>
         <td><strong>{{ user.username }}</strong></td>
         <td>{{ user.email or "—" }}</td>
-        <td><span class="role-pill {{ user.role }}">{{ user.role | replace('_', ' ') | title }}</span></td>
+        <td>
+          {% if user.role == 'admin' %}
+          <span class="role-pill {{ user.role }}">{{ user.role | replace('_', ' ') | title }}</span>
+          {% else %}
+          <form method="post" class="inline-form">
+            <input type="hidden" name="action" value="change_role">
+            <input type="hidden" name="username" value="{{ user.username }}">
+            <select name="role" required aria-label="Role for {{ user.username }}" style="font-size:.875rem;padding:.35rem .6rem;">
+              <option value="front_desk" {% if user.role == 'front_desk' %}selected{% endif %}>Front Desk</option>
+              <option value="maintenance" {% if user.role == 'maintenance' %}selected{% endif %}>Maintenance</option>
+              <option value="supervisor" {% if user.role == 'supervisor' %}selected{% endif %}>Supervisor</option>
+            </select>
+            <button type="submit" style="font-size:.875rem;padding:.35rem .7rem;">Update</button>
+          </form>
+          {% endif %}
+        </td>
         <td>
           <form method="post" class="inline-form">
             <input type="hidden" name="action" value="change_location">

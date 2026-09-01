@@ -71,6 +71,42 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertIn(b'<option value="HCK" selected>HCK</option>', admin_page.data)
             self.assertIn(b'<option value="Downtown" selected>Downtown</option>', admin_page.data)
 
+    def test_admin_can_change_an_existing_users_role(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session["user"] = "admin"
+                session["role"] = "admin"
+
+            response = client.post(
+                "/admin",
+                data={"action": "change_role", "username": "frontdesk", "role": "maintenance"},
+                follow_redirects=True,
+            )
+
+            user = next(user for user in app.config["STORE"].load_settings()["users"] if user["username"] == "frontdesk")
+            self.assertEqual(user["role"], "maintenance")
+            self.assertIn(b"Role updated for &#39;frontdesk&#39;.", response.data)
+
+    def test_admin_cannot_assign_an_invalid_or_admin_role(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session["user"] = "admin"
+                session["role"] = "admin"
+
+            response = client.post(
+                "/admin",
+                data={"action": "change_role", "username": "frontdesk", "role": "admin"},
+                follow_redirects=True,
+            )
+
+            user = next(user for user in app.config["STORE"].load_settings()["users"] if user["username"] == "frontdesk")
+            self.assertEqual(user["role"], "front_desk")
+            self.assertIn(b"Select a valid role.", response.data)
+
     def test_maintenance_user_can_open_form_and_create_issue(self):
         with tempfile.TemporaryDirectory() as config_path:
             app = self.make_app(config_path)
