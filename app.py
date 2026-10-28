@@ -273,6 +273,10 @@ def create_app() -> Flask:
             if issue.get("location", DEFAULT_LOCATION) == location
         ]
 
+    def _room_sort_key(room: str):
+        digits = "".join(ch for ch in str(room) if ch.isdigit())
+        return (0, int(digits), str(room)) if digits else (1, str(room))
+
     def _issue_category(issue: dict) -> str:
         """Issues saved before categories existed are treated as maintenance issues."""
         category = issue.get("category", DEFAULT_CATEGORY)
@@ -527,10 +531,17 @@ def create_app() -> Flask:
         tab = request.args.get("tab", default_tab)
         if tab not in ISSUE_CATEGORIES:
             tab = default_tab
+        # The chosen sort sticks for the session so it survives form submissions.
+        sort = request.args.get("sort") or session.get("issue_sort", "default")
+        if sort not in ("default", "room"):
+            sort = "default"
+        session["issue_sort"] = sort
         all_open = sorted(
             (i for i in issues if i["status"] == "open"),
             key=lambda x: x["created_at"],
         )
+        if sort == "room":
+            all_open.sort(key=lambda x: _room_sort_key(x["room"]))
         tab_counts = {
             category: sum(1 for i in all_open if _issue_category(i) == category)
             for category in ISSUE_CATEGORIES
@@ -545,6 +556,7 @@ def create_app() -> Flask:
                 "maintenance_dashboard.html",
                 open_by_category=open_by_category,
                 tab=tab,
+                sort=sort,
                 tab_counts=tab_counts,
                 default_category=default_tab,
             )
@@ -555,6 +567,8 @@ def create_app() -> Flask:
             key=lambda x: x.get("closed_at", ""),
             reverse=True,
         )
+        if sort == "room":
+            recent_closed.sort(key=lambda x: _room_sort_key(x["room"]))
         closed_by_category = {
             category: [i for i in recent_closed if _issue_category(i) == category]
             for category in ISSUE_CATEGORIES
@@ -564,6 +578,7 @@ def create_app() -> Flask:
             open_by_category=open_by_category,
             closed_by_category=closed_by_category,
             tab=tab,
+            sort=sort,
             tab_counts=tab_counts,
             default_category=default_tab,
         )
@@ -587,14 +602,10 @@ def create_app() -> Flask:
         for issue in closed:
             by_room.setdefault(issue["room"], []).append(issue)
 
-        def room_sort_key(room: str):
-            digits = "".join(ch for ch in str(room) if ch.isdigit())
-            return (0, int(digits), str(room)) if digits else (1, str(room))
-
         return render_template(
             "history.html",
             by_room=by_room,
-            rooms=sorted(by_room, key=room_sort_key),
+            rooms=sorted(by_room, key=_room_sort_key),
         )
 
     @app.post("/issues")

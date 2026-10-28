@@ -179,9 +179,24 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertNotIn("Needs extra towels", maint)
             self.assertNotIn("2026-11-06", page)
 
+            # Sorting by room number, remembered for the session.
+            client.post("/issues", data={"room": "9", "description": "Late room", "category": "guest"})
+            client.post("/issues", data={"room": "10", "description": "Later room", "category": "guest"})
+            default_page = client.get("/dashboard").data.decode()
+            self.assertLess(default_page.index("Needs extra towels"), default_page.index("Late room"))
+            self.assertLess(default_page.index("Late room"), default_page.index("Later room"))
+            by_room = client.get("/dashboard?sort=room").data.decode()
+            self.assertLess(by_room.index("Late room"), by_room.index("Later room"))
+            self.assertLess(by_room.index("Later room"), by_room.index("Needs extra towels"))
+            self.assertIn("Later room", client.get("/dashboard").data.decode())
+            client.get("/dashboard?sort=default")
+            for room in ("9", "10"):
+                issue = next(i for i in app.config["STORE"].load_issues() if i["room"] == room)
+                app.config["STORE"].close_issue(issue["id"], "maintenance", "done")
+
             # Checkout requires a valid date.
             client.post("/issues", data={"room": "103", "description": "x", "category": "guest", "do_on_checkout": "on"})
-            self.assertEqual(len(app.config["STORE"].load_issues()), 4)
+            self.assertEqual(len(app.config["STORE"].load_issues()), 6)
 
             with client.session_transaction() as session:
                 session["user"] = "supervisor"

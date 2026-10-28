@@ -138,3 +138,5 @@ button:hover { background: #e2e8f0; }
   .column-title { display: flex; }
   .issue-column .tile-grid { grid-template-columns: 1fr; }
 }
+.sort-form { display: flex; justify-content: flex-end; margin-bottom: 1rem; }
+.sort-label { display: flex; align-items: center; gap: .5rem; font-size: .9rem; color: #64748b; }
