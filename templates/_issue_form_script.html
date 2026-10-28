@@ -3,6 +3,8 @@
     const container = document.getElementById('issue-rows');
     const template = document.getElementById('issue-row-template');
     let counter = 1;
+    // Most recent checkout date entered, used to prefill later "On checkout" rows.
+    let lastCheckoutDate = '';
 
     function sync(row) {
       const guest = row.querySelector('input[type=radio]:checked').value === 'guest';
@@ -24,7 +26,13 @@
       const row = e.target.closest('[data-row]');
       if (!row) return;
       sync(row);
-      if (e.target.type === 'checkbox' && e.target.checked) row.querySelector('input[type=date]').focus();
+      const date = row.querySelector('input[type=date]');
+      if (e.target.type === 'date') {
+        lastCheckoutDate = date.value;
+      } else if (e.target.type === 'checkbox' && e.target.checked) {
+        if (!date.value && lastCheckoutDate) date.value = lastCheckoutDate;
+        date.focus();
+      }
     });
     container.addEventListener('click', e => {
       if (!e.target.matches('[data-remove-row]')) return;
