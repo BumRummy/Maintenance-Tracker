@@ -141,6 +141,24 @@ class Store:
         self.save_issues(issues)
         return issue
 
+    def move_issue(self, issue_id: str, category: str, location: str) -> dict | None:
+        """Move an open issue to another category, returning the updated issue."""
+        issues = self.load_issues()
+        for issue in issues:
+            if (
+                issue["id"] == issue_id
+                and issue["status"] == "open"
+                and issue.get("location", DEFAULT_LOCATION) == location
+            ):
+                issue["category"] = category
+                if category != "guest":
+                    # "On checkout" only applies to guest issues.
+                    issue["do_on_checkout"] = False
+                    issue["checkout_date"] = None
+                self.save_issues(issues)
+                return issue
+        return None
+
     def close_issue(self, issue_id: str, closed_by: str, resolution: str, location: str | None = None) -> bool:
         issues = self.load_issues()
         for issue in issues:
@@ -637,6 +655,22 @@ def create_app() -> Flask:
         _send_new_issue_notifications(issue)
         flash(f"Issue submitted for room {room.upper()}.", "success")
         return redirect(url_for("dashboard", tab=category))
+
+    @app.post("/issues/<issue_id>/move")
+    def move_issue(issue_id):
+        if session.get("role") not in ("supervisor", "admin", "maintenance"):
+            return jsonify({"error": "You cannot move issues."}), 403
+        category = request.form.get("category", "").strip()
+        if category not in ISSUE_CATEGORIES:
+            return jsonify({"error": "Select a valid category."}), 400
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return jsonify({"error": "Your account is no longer available."}), 403
+        issue = store.move_issue(issue_id, category, location)
+        if not issue:
+            return jsonify({"error": "Issue was not found at your assigned location."}), 404
+        return jsonify({"ok": True, "category": issue["category"]})
 
     @app.post("/issues/<issue_id>/close")
     def close_issue(issue_id):

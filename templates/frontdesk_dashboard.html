@@ -33,12 +33,11 @@
 
 <div class="issue-columns">
   {% for cat, label in (('guest', 'Guest Issues'), ('maintenance', 'Maintenance Issues')) %}
-  <section class="issue-column {{ 'active' if tab == cat }}">
-    <h2 class="column-title">{{ label }} <span class="count-badge">{{ tab_counts[cat] }}</span></h2>
-    {% if open_by_category[cat] %}
-    <div class="tile-grid">
+  <section data-category="{{ cat }}" class="issue-column {{ 'active' if tab == cat }}">
+    <h2 class="column-title">{{ label }} <span class="count-badge" data-count>{{ tab_counts[cat] }}</span></h2>
+    <div class="tile-grid" data-open-grid>
       {% for issue in open_by_category[cat] %}
-      <div class="tile">
+      <div class="tile" data-id="{{ issue.id }}" data-room="{{ issue.room }}" data-created="{{ issue.created_at }}">
         <div class="tile-room">Room {{ issue.room }}</div>
         <div class="tile-desc">{{ issue.description }}</div>
         {% if issue.checkout_date %}<div class="tile-checkout">&#128197; On checkout: {{ issue.checkout_date }}</div>{% endif %}
@@ -46,11 +45,16 @@
           <span class="tile-meta">Reported {{ issue.created_at | fmtdate }}</span>
           <span class="tile-meta">by {{ issue.created_by }}</span>
         </div>
+        {% if session.role in ('supervisor', 'admin', 'maintenance') %}
+        <button type="button" class="move-btn" data-move-to="{{ 'maintenance' if cat == 'guest' else 'guest' }}">
+          Move to {{ 'Maintenance' if cat == 'guest' else 'Guest' }} Issues
+        </button>
+        {% endif %}
       </div>
       {% endfor %}
     </div>
-    {% else %}
-    <div class="empty-state"><p>No open {{ label | lower }}. Use <strong>+ New Issue</strong> to report one.</p></div>
+    {% if not open_by_category[cat] %}
+    <div class="empty-state" data-empty><p>No open {{ label | lower }}. Use <strong>+ New Issue</strong> to report one.</p></div>
     {% endif %}
 
     <p class="section-title">Recently Resolved <span class="count-badge" style="background:#22c55e">{{ closed_by_category[cat] | length }}</span></p>
@@ -81,5 +85,6 @@
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.remove('open'); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') modal.classList.remove('open'); });
 </script>
+{% include '_issue_move_script.html' %}
 {% include '_issue_form_script.html' %}
 {% endblock %}

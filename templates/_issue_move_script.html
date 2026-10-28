@@ -1,0 +1,73 @@
+<script>
+  (function () {
+    const sortMode = {{ sort | tojson }};
+    const labels = {guest: 'Guest Issues', maintenance: 'Maintenance Issues'};
+
+    function column(cat) { return document.querySelector('.issue-column[data-category="' + cat + '"]'); }
+
+    function roomKey(room) {
+      const digits = room.replace(/\D/g, '');
+      return digits ? [0, parseInt(digits, 10), room] : [1, 0, room];
+    }
+    function before(a, b) {
+      if (sortMode === 'room') {
+        const ka = roomKey(a.dataset.room), kb = roomKey(b.dataset.room);
+        for (let i = 0; i < 3; i++) { if (ka[i] !== kb[i]) return ka[i] < kb[i]; }
+        return false;
+      }
+      return a.dataset.created < b.dataset.created;
+    }
+
+    function updateCounts() {
+      document.querySelectorAll('.issue-column').forEach(col => {
+        const n = col.querySelectorAll('[data-open-grid] > .tile').length;
+        col.querySelector('[data-count]').textContent = n;
+        const tabBadge = document.querySelector('.tab[href*="tab=' + col.dataset.category + '"] .count-badge');
+        if (tabBadge) tabBadge.textContent = n;
+        const grid = col.querySelector('[data-open-grid]');
+        let empty = col.querySelector('[data-empty]');
+        if (n === 0 && !empty) {
+          empty = document.createElement('div');
+          empty.className = 'empty-state';
+          empty.dataset.empty = '';
+          empty.innerHTML = '<p>No open ' + labels[col.dataset.category].toLowerCase() + '.</p>';
+          grid.after(empty);
+        } else if (n > 0 && empty) {
+          empty.remove();
+        }
+      });
+    }
+
+    function place(tile, cat) {
+      const grid = column(cat).querySelector('[data-open-grid]');
+      const next = Array.from(grid.children).find(other => before(tile, other));
+      grid.insertBefore(tile, next || null);
+    }
+
+    document.addEventListener('click', async e => {
+      const btn = e.target.closest('.move-btn');
+      if (!btn) return;
+      const tile = btn.closest('.tile');
+      const target = btn.dataset.moveTo;
+      btn.disabled = true;
+      try {
+        const res = await fetch('/issues/' + tile.dataset.id + '/move', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: new URLSearchParams({category: target}),
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Unable to move issue.');
+        const checkout = tile.querySelector('.tile-checkout');
+        if (checkout && target !== 'guest') checkout.remove();
+        btn.dataset.moveTo = target === 'guest' ? 'maintenance' : 'guest';
+        btn.textContent = 'Move to ' + labels[btn.dataset.moveTo];
+        place(tile, target);
+        updateCounts();
+      } catch (err) {
+        alert(err.message);
+      } finally {
+        btn.disabled = false;
+      }
+    });
+  })();
+</script>

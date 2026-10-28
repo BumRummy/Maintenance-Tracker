@@ -169,7 +169,7 @@ class MaintenanceIssueTests(unittest.TestCase):
 
             # Both categories render as separate columns on one page.
             page = client.get("/dashboard").data.decode()
-            columns = page.split('<section class="issue-column')[1:]
+            columns = page.split('<section data-category=')[1:]
             self.assertEqual(len(columns), 2)
             guest, maint = columns
             self.assertIn("Needs extra towels", guest)
@@ -193,6 +193,24 @@ class MaintenanceIssueTests(unittest.TestCase):
             for room in ("9", "10"):
                 issue = next(i for i in app.config["STORE"].load_issues() if i["room"] == room)
                 app.config["STORE"].close_issue(issue["id"], "maintenance", "done")
+
+            # Supervisors and maintenance can move issues; front desk cannot.
+            issue_id = next(i["id"] for i in app.config["STORE"].load_issues() if i["room"] == "104")
+            denied = client.post(f"/issues/{issue_id}/move", data={"category": "maintenance"})
+            self.assertEqual(denied.status_code, 403)
+            for role in ("supervisor", "maintenance"):
+                with client.session_transaction() as session:
+                    session["user"] = role
+                    session["role"] = role
+                moved = client.post(f"/issues/{issue_id}/move", data={"category": "maintenance"})
+                self.assertEqual(moved.get_json()["category"], "maintenance")
+                issue = next(i for i in app.config["STORE"].load_issues() if i["id"] == issue_id)
+                self.assertIsNone(issue["checkout_date"])
+                self.assertEqual(client.post(f"/issues/{issue_id}/move", data={"category": "bogus"}).status_code, 400)
+                client.post(f"/issues/{issue_id}/move", data={"category": "guest"})
+            with client.session_transaction() as session:
+                session["user"] = "frontdesk"
+                session["role"] = "front_desk"
 
             # Checkout requires a valid date.
             client.post("/issues", data={"room": "103", "description": "x", "category": "guest", "do_on_checkout": "on"})
