@@ -37,7 +37,7 @@
   <div class="tile">
     <div class="tile-room">Room {{ issue.room }}</div>
     <div class="tile-desc">{{ issue.description }}</div>
-    {% if issue.checkout_date %}<div class="tile-checkout">&#128197; Do on checkout: {{ issue.checkout_date }}</div>{% endif %}
+    {% if issue.checkout_date %}<div class="tile-checkout">&#128197; On checkout: {{ issue.checkout_date }}</div>{% endif %}
     <div class="tile-footer">
       <span class="tile-meta">Reported {{ issue.created_at | fmtdate }}</span>
       <span class="tile-meta">by {{ issue.created_by }}</span>

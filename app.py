@@ -839,7 +839,7 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         output = StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Room", "Type", "Do on checkout", "Description", "Status", "Reported", "Reported by", "Resolved", "Resolved by", "Resolution"])
+        writer.writerow(["Room", "Type", "On checkout", "Description", "Status", "Reported", "Reported by", "Resolved", "Resolved by", "Resolution"])
         issues = sorted(
             _issues_for_location(location),
             key=lambda item: item["created_at"],
