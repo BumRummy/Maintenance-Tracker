@@ -59,6 +59,8 @@
         if (!res.ok) throw new Error((await res.json()).error || 'Unable to move issue.');
         const checkout = tile.querySelector('.tile-checkout');
         if (checkout && target !== 'guest') checkout.remove();
+        tile.dataset.category = target;
+        if (target !== 'guest') tile.dataset.checkout = '';
         btn.dataset.moveTo = target === 'guest' ? 'maintenance' : 'guest';
         btn.textContent = 'Move to ' + labels[btn.dataset.moveTo];
         place(tile, target);
@@ -67,6 +69,86 @@
         alert(err.message);
       } finally {
         btn.disabled = false;
+      }
+    });
+
+    // --- Edit issue ---
+    const editModal = document.getElementById('edit-issue-modal');
+    const editForm = document.getElementById('edit-issue-form');
+    const editError = document.getElementById('edit-error');
+    let editingTile = null;
+
+    function syncEdit() {
+      const guest = editForm.category.value === 'guest';
+      const box = editForm.do_on_checkout;
+      document.getElementById('edit-checkout-option').hidden = !guest;
+      if (!guest) box.checked = false;
+      document.getElementById('edit-checkout-date-wrap').hidden = !(guest && box.checked);
+      editForm.checkout_date.required = guest && box.checked;
+    }
+    editForm.addEventListener('change', syncEdit);
+    document.getElementById('edit-cancel-btn').addEventListener('click', () => editModal.classList.remove('open'));
+    editModal.addEventListener('click', e => { if (e.target === editModal) editModal.classList.remove('open'); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') editModal.classList.remove('open'); });
+
+    document.addEventListener('click', e => {
+      const btn = e.target.closest('.edit-btn');
+      if (!btn) return;
+      editingTile = btn.closest('.tile');
+      editForm.room.value = editingTile.dataset.room;
+      editForm.description.value = editingTile.querySelector('.tile-desc').textContent;
+      editForm.category.value = editingTile.dataset.category;
+      editForm.do_on_checkout.checked = !!editingTile.dataset.checkout;
+      editForm.checkout_date.value = editingTile.dataset.checkout;
+      editError.hidden = true;
+      syncEdit();
+      editModal.classList.add('open');
+      editForm.description.focus();
+    });
+
+    editForm.addEventListener('submit', async e => {
+      e.preventDefault();
+      const tile = editingTile;
+      const submit = editForm.querySelector('[type=submit]');
+      submit.disabled = true;
+      try {
+        const res = await fetch('/issues/' + tile.dataset.id + '/edit', {
+          method: 'POST',
+          headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+          body: new URLSearchParams(new FormData(editForm)),
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unable to save changes.');
+        const issue = data.issue;
+        tile.dataset.room = issue.room;
+        tile.dataset.category = issue.category;
+        tile.dataset.checkout = issue.checkout_date || '';
+        tile.querySelector('.tile-room').textContent = 'Room ' + issue.room;
+        tile.querySelector('.tile-desc').textContent = issue.description;
+        let checkout = tile.querySelector('.tile-checkout');
+        if (issue.checkout_date) {
+          if (!checkout) {
+            checkout = document.createElement('div');
+            checkout.className = 'tile-checkout';
+            tile.querySelector('.tile-desc').after(checkout);
+          }
+          checkout.textContent = '\u{1F4C5} On checkout: ' + issue.checkout_date;
+        } else if (checkout) {
+          checkout.remove();
+        }
+        const moveBtn = tile.querySelector('.move-btn');
+        if (moveBtn) {
+          moveBtn.dataset.moveTo = issue.category === 'guest' ? 'maintenance' : 'guest';
+          moveBtn.textContent = 'Move to ' + labels[moveBtn.dataset.moveTo];
+        }
+        place(tile, issue.category);
+        updateCounts();
+        editModal.classList.remove('open');
+      } catch (err) {
+        editError.textContent = err.message;
+        editError.hidden = false;
+      } finally {
+        submit.disabled = false;
       }
     });
   })();

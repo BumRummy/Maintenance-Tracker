@@ -160,6 +160,36 @@ class Store:
                 return issue
         return None
 
+    def update_issue(
+        self,
+        issue_id: str,
+        location: str,
+        edited_by: str,
+        room: str,
+        description: str,
+        category: str,
+        checkout_date: str | None,
+    ) -> dict | None:
+        """Edit an open issue's details, returning the updated issue."""
+        issues = self.load_issues()
+        for issue in issues:
+            if (
+                issue["id"] == issue_id
+                and issue["status"] == "open"
+                and issue.get("location", DEFAULT_LOCATION) == location
+            ):
+                issue["room"] = room.strip().upper()
+                issue["description"] = description.strip()
+                issue["category"] = category
+                # "On checkout" only applies to guest issues.
+                issue["checkout_date"] = checkout_date if category == "guest" else None
+                issue["do_on_checkout"] = bool(issue["checkout_date"])
+                issue["edited_at"] = datetime.now(timezone.utc).isoformat()
+                issue["edited_by"] = edited_by
+                self.save_issues(issues)
+                return issue
+        return None
+
     def close_issue(self, issue_id: str, closed_by: str, resolution: str, location: str | None = None) -> bool:
         issues = self.load_issues()
         for issue in issues:
@@ -668,6 +698,35 @@ def create_app() -> Flask:
         else:
             flash(f"{len(entries)} issues submitted for room {room.upper()}.", "success")
         return redirect(url_for("dashboard", tab=entries[0][1]))
+
+    @app.post("/issues/<issue_id>/edit")
+    def edit_issue(issue_id):
+        if session.get("role") not in ("front_desk", "supervisor", "maintenance", "admin"):
+            return jsonify({"error": "You cannot edit issues."}), 403
+        room = request.form.get("room", "").strip()
+        description = request.form.get("description", "").strip()
+        category = request.form.get("category", "").strip()
+        if not room or not description:
+            return jsonify({"error": "Room and description are required."}), 400
+        if category not in ISSUE_CATEGORIES:
+            return jsonify({"error": "Select a valid category."}), 400
+        checkout_date = None
+        if category == "guest" and request.form.get("do_on_checkout"):
+            try:
+                checkout_date = datetime.strptime(request.form.get("checkout_date", "").strip(), "%Y-%m-%d").date().isoformat()
+            except ValueError:
+                return jsonify({"error": "Select a valid checkout date."}), 400
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return jsonify({"error": "Your account is no longer available."}), 403
+        issue = store.update_issue(issue_id, location, session["user"], room, description, category, checkout_date)
+        if not issue:
+            return jsonify({"error": "Issue was not found at your assigned location."}), 404
+        return jsonify({"ok": True, "issue": {
+            "room": issue["room"], "description": issue["description"],
+            "category": issue["category"], "checkout_date": issue["checkout_date"],
+        }})
 
     @app.post("/issues/<issue_id>/move")
     def move_issue(issue_id):

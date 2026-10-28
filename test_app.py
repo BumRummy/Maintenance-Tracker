@@ -217,6 +217,35 @@ class MaintenanceIssueTests(unittest.TestCase):
             for issue in added:
                 app.config["STORE"].close_issue(issue["id"], "maintenance", "done")
 
+            # Open issues can be edited by any dashboard role.
+            target = next(i for i in app.config["STORE"].load_issues() if i["room"] == "104")
+            edited = client.post(
+                f"/issues/{target['id']}/edit",
+                data={"room": "105a", "description": "Swap feather pillows", "category": "guest",
+                      "do_on_checkout": "on", "checkout_date": "2026-11-20"},
+            )
+            self.assertEqual(edited.get_json()["issue"]["room"], "105A")
+            saved = next(i for i in app.config["STORE"].load_issues() if i["id"] == target["id"])
+            self.assertEqual((saved["description"], saved["checkout_date"], saved["edited_by"]),
+                             ("Swap feather pillows", "2026-11-20", "frontdesk"))
+            as_maint = client.post(f"/issues/{target['id']}/edit", data={"room": "105A", "description": "x", "category": "maintenance"})
+            self.assertEqual(as_maint.status_code, 200)
+            saved = next(i for i in app.config["STORE"].load_issues() if i["id"] == target["id"])
+            self.assertIsNone(saved["checkout_date"])
+            for bad in ({"room": "", "description": "x", "category": "guest"},
+                        {"room": "1", "description": "x", "category": "nope"},
+                        {"room": "1", "description": "x", "category": "guest", "do_on_checkout": "on"}):
+                self.assertEqual(client.post(f"/issues/{target['id']}/edit", data=bad).status_code, 400)
+            self.assertEqual(client.post("/issues/missing/edit", data={"room": "1", "description": "x", "category": "guest"}).status_code, 404)
+            store = app.config["STORE"]
+            all_issues = store.load_issues()
+            for i in all_issues:
+                if i["id"] == target["id"]:
+                    i["room"] = "104"
+                    i["category"] = "guest"
+                    i["checkout_date"] = "2026-11-05"
+            store.save_issues(all_issues)
+
             # Supervisors and maintenance can move issues; front desk cannot.
             issue_id = next(i["id"] for i in app.config["STORE"].load_issues() if i["room"] == "104")
             denied = client.post(f"/issues/{issue_id}/move", data={"category": "maintenance"})

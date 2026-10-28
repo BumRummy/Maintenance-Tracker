@@ -147,3 +147,5 @@ button:hover { background: #e2e8f0; }
 .add-row-btn { width: 100%; border-style: dashed; color: #2563eb; }
 .row-remove { justify-self: end; color: #dc2626; }
 [hidden] { display: none !important; }
+.edit-btn { width: 100%; font-size: .85rem; padding: .4rem .6rem; }
+.form-error { margin: 0; color: #991b1b; background: #fee2e2; border-radius: 6px; padding: .5rem .75rem; font-size: .9rem; }
