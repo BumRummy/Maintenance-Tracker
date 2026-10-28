@@ -1,0 +1,7 @@
+<div id="issue-rows">
+  {% with n = 1 %}{% include '_issue_row.html' %}{% endwith %}
+</div>
+<template id="issue-row-template">
+  {% with n = '__N__' %}{% include '_issue_row.html' %}{% endwith %}
+</template>
+<button type="button" id="add-row-btn" class="add-row-btn">+ Add another issue to this room</button>

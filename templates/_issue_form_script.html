@@ -1,19 +1,46 @@
 <script>
   (function () {
-    const box = document.getElementById('do-on-checkout');
-    const option = document.getElementById('checkout-option');
-    const wrap = document.getElementById('checkout-date-wrap');
-    const date = document.getElementById('checkout-date');
-    const radios = document.querySelectorAll('input[name="category"]');
-    function sync() {
-      const guest = document.querySelector('input[name="category"]:checked').value === 'guest';
+    const container = document.getElementById('issue-rows');
+    const template = document.getElementById('issue-row-template');
+    let counter = 1;
+
+    function sync(row) {
+      const guest = row.querySelector('input[type=radio]:checked').value === 'guest';
+      const box = row.querySelector('input[type=checkbox]');
+      const option = row.querySelector('[data-checkout-option]');
+      const wrap = row.querySelector('[data-checkout-date-wrap]');
+      const date = row.querySelector('input[type=date]');
       option.hidden = !guest;
       if (!guest) box.checked = false;
       wrap.hidden = !(guest && box.checked);
       date.required = guest && box.checked;
     }
-    box.addEventListener('change', () => { sync(); if (box.checked) date.focus(); });
-    radios.forEach(r => r.addEventListener('change', sync));
-    sync();
+    function updateRemoveButtons() {
+      const rows = container.querySelectorAll('[data-row]');
+      rows.forEach(r => { r.querySelector('[data-remove-row]').hidden = rows.length < 2; });
+    }
+
+    container.addEventListener('change', e => {
+      const row = e.target.closest('[data-row]');
+      if (!row) return;
+      sync(row);
+      if (e.target.type === 'checkbox' && e.target.checked) row.querySelector('input[type=date]').focus();
+    });
+    container.addEventListener('click', e => {
+      if (!e.target.matches('[data-remove-row]')) return;
+      e.target.closest('[data-row]').remove();
+      updateRemoveButtons();
+    });
+    document.getElementById('add-row-btn').addEventListener('click', () => {
+      counter += 1;
+      const holder = document.createElement('div');
+      holder.innerHTML = template.innerHTML.replaceAll('__N__', counter);
+      const row = holder.firstElementChild;
+      container.appendChild(row);
+      sync(row);
+      updateRemoveButtons();
+      row.querySelector('textarea').focus();
+    });
+    container.querySelectorAll('[data-row]').forEach(sync);
   })();
 </script>

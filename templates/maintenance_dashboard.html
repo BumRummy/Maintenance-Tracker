@@ -14,10 +14,7 @@
       <label>Room Number
         <input name="room" required placeholder="e.g. 101">
       </label>
-      <label>Description
-        <textarea name="description" required rows="3" placeholder="Describe the issue…"></textarea>
-      </label>
-      {% include '_issue_form_fields.html' %}
+      {% include '_issue_rows.html' %}
       <div class="modal-actions">
         <button type="submit" class="btn-primary">Submit Issue</button>
         <button type="button" id="close-modal-btn">Cancel</button>

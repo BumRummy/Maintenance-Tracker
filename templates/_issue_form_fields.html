@@ -1,9 +1,0 @@
-<fieldset class="category-picker">
-  <legend>Add to</legend>
-  <label class="radio-option"><input type="radio" name="category" value="guest" {{ 'checked' if default_category == 'guest' }}> Guest Issues</label>
-  <label class="radio-option"><input type="radio" name="category" value="maintenance" {{ 'checked' if default_category == 'maintenance' }}> Maintenance Issues</label>
-</fieldset>
-<label class="checkbox-option" id="checkout-option" {{ 'hidden' if default_category != 'guest' }}><input type="checkbox" name="do_on_checkout" id="do-on-checkout"> On checkout</label>
-<label id="checkout-date-wrap" hidden>Checkout date
-  <input type="date" name="checkout_date" id="checkout-date">
-</label>

@@ -194,6 +194,29 @@ class MaintenanceIssueTests(unittest.TestCase):
                 issue = next(i for i in app.config["STORE"].load_issues() if i["room"] == room)
                 app.config["STORE"].close_issue(issue["id"], "maintenance", "done")
 
+            # Several issues for one room can be submitted at once.
+            before = len(app.config["STORE"].load_issues())
+            multi = client.post(
+                "/issues",
+                data={
+                    "room": "220",
+                    "row": ["1", "2"],
+                    "description_1": "TV remote missing", "category_1": "guest",
+                    "do_on_checkout_1": "on", "checkout_date_1": "2026-12-01",
+                    "description_2": "Closet door off track", "category_2": "maintenance",
+                },
+                follow_redirects=True,
+            )
+            self.assertIn(b"2 issues submitted for room 220.", multi.data)
+            added = app.config["STORE"].load_issues()[before:]
+            self.assertEqual([(i["room"], i["category"], i["checkout_date"]) for i in added],
+                             [("220", "guest", "2026-12-01"), ("220", "maintenance", None)])
+            # A blank description rejects the whole submission.
+            client.post("/issues", data={"room": "221", "row": ["1", "2"], "description_1": "ok", "description_2": " "})
+            self.assertEqual(len(app.config["STORE"].load_issues()), before + 2)
+            for issue in added:
+                app.config["STORE"].close_issue(issue["id"], "maintenance", "done")
+
             # Supervisors and maintenance can move issues; front desk cannot.
             issue_id = next(i["id"] for i in app.config["STORE"].load_issues() if i["room"] == "104")
             denied = client.post(f"/issues/{issue_id}/move", data={"category": "maintenance"})
@@ -214,7 +237,7 @@ class MaintenanceIssueTests(unittest.TestCase):
 
             # Checkout requires a valid date.
             client.post("/issues", data={"room": "103", "description": "x", "category": "guest", "do_on_checkout": "on"})
-            self.assertEqual(len(app.config["STORE"].load_issues()), 6)
+            self.assertEqual(len(app.config["STORE"].load_issues()), 8)
 
             with client.session_transaction() as session:
                 session["user"] = "supervisor"

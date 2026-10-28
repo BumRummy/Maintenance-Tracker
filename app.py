@@ -20,6 +20,7 @@ from pywebpush import WebPushException, webpush
 DEFAULT_LOCATION = "HCK"
 ISSUE_CATEGORIES = ("guest", "maintenance")
 DEFAULT_CATEGORY = "maintenance"
+MAX_ISSUES_PER_SUBMIT = 20
 
 DEFAULT_SETTINGS = {
     "locations": [DEFAULT_LOCATION],
@@ -632,29 +633,41 @@ def create_app() -> Flask:
         if guard:
             return guard
         room = request.form.get("room", "").strip()
-        description = request.form.get("description", "").strip()
-        category = request.form.get("category", "").strip()
-        if category not in ISSUE_CATEGORIES:
-            category = "guest" if session.get("role") == "front_desk" else DEFAULT_CATEGORY
-        if not room or not description:
-            flash("Room and description are required.", "error")
-            return redirect(url_for("dashboard", tab=category))
-        checkout_date = None
-        if category == "guest" and request.form.get("do_on_checkout"):
-            raw_date = request.form.get("checkout_date", "").strip()
-            try:
-                checkout_date = datetime.strptime(raw_date, "%Y-%m-%d").date().isoformat()
-            except ValueError:
-                flash("Select a valid checkout date.", "error")
+        default_category = "guest" if session.get("role") == "front_desk" else DEFAULT_CATEGORY
+        # Each row is one issue for the room; its fields carry the row id as a suffix.
+        # A form without row ids is treated as a single issue using the plain field names.
+        row_ids = request.form.getlist("row")[:MAX_ISSUES_PER_SUBMIT] or [""]
+        entries = []
+        for row_id in row_ids:
+            suffix = f"_{row_id}" if row_id else ""
+            description = request.form.get(f"description{suffix}", "").strip()
+            category = request.form.get(f"category{suffix}", "").strip()
+            if category not in ISSUE_CATEGORIES:
+                category = default_category
+            if not room or not description:
+                flash("Room and a description for every issue are required.", "error")
                 return redirect(url_for("dashboard", tab=category))
+            checkout_date = None
+            if category == "guest" and request.form.get(f"do_on_checkout{suffix}"):
+                raw_date = request.form.get(f"checkout_date{suffix}", "").strip()
+                try:
+                    checkout_date = datetime.strptime(raw_date, "%Y-%m-%d").date().isoformat()
+                except ValueError:
+                    flash("Select a valid checkout date.", "error")
+                    return redirect(url_for("dashboard", tab=category))
+            entries.append((description, category, checkout_date))
         location = _location_for_current_user()
         if not location:
             session.clear()
             return redirect(url_for("login"))
-        issue = store.add_issue(room, description, session["user"], location, category, checkout_date)
-        _send_new_issue_notifications(issue)
-        flash(f"Issue submitted for room {room.upper()}.", "success")
-        return redirect(url_for("dashboard", tab=category))
+        for description, category, checkout_date in entries:
+            issue = store.add_issue(room, description, session["user"], location, category, checkout_date)
+            _send_new_issue_notifications(issue)
+        if len(entries) == 1:
+            flash(f"Issue submitted for room {room.upper()}.", "success")
+        else:
+            flash(f"{len(entries)} issues submitted for room {room.upper()}.", "success")
+        return redirect(url_for("dashboard", tab=entries[0][1]))
 
     @app.post("/issues/<issue_id>/move")
     def move_issue(issue_id):
