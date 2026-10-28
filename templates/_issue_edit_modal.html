@@ -1,0 +1,27 @@
+<div id="edit-issue-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="edit-issue-title">
+  <div class="modal">
+    <h2 id="edit-issue-title">Edit Issue</h2>
+    <form id="edit-issue-form" class="modal-form">
+      <label>Room Number
+        <input name="room" required>
+      </label>
+      <label>Description
+        <textarea name="description" required rows="3"></textarea>
+      </label>
+      <fieldset class="category-picker">
+        <legend>Add to</legend>
+        <label class="radio-option"><input type="radio" name="category" value="guest"> Guest Issues</label>
+        <label class="radio-option"><input type="radio" name="category" value="maintenance"> Maintenance Issues</label>
+      </fieldset>
+      <label class="checkbox-option" id="edit-checkout-option"><input type="checkbox" name="do_on_checkout"> On checkout</label>
+      <label id="edit-checkout-date-wrap" hidden>Checkout date
+        <input type="date" name="checkout_date">
+      </label>
+      <p class="form-error" id="edit-error" hidden></p>
+      <div class="modal-actions">
+        <button type="submit" class="btn-primary">Save Changes</button>
+        <button type="button" id="edit-cancel-btn">Cancel</button>
+      </div>
+    </form>
+  </div>
+</div>

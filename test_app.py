@@ -129,6 +129,150 @@ class MaintenanceIssueTests(unittest.TestCase):
             issue = app.config["STORE"].load_issues()[0]
             self.assertEqual(issue["created_by"], "maintenance")
 
+    def test_issue_categories_tabs_and_checkout_date(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session["user"] = "frontdesk"
+                session["role"] = "front_desk"
+
+            # Front desk defaults to the guest tab and guest category.
+            page = client.get("/dashboard").data
+            self.assertIn(b'value="guest" checked', page)
+            client.post("/issues", data={"room": "101", "description": "Needs extra towels"})
+            client.post(
+                "/issues",
+                data={"room": "102", "description": "Fix door", "category": "maintenance"},
+            )
+            client.post(
+                "/issues",
+                data={
+                    "room": "104", "description": "Swap pillows", "category": "guest",
+                    "do_on_checkout": "on", "checkout_date": "2026-11-05",
+                },
+            )
+            # Checkout dates are ignored for maintenance issues.
+            client.post(
+                "/issues",
+                data={
+                    "room": "105", "description": "Paint wall", "category": "maintenance",
+                    "do_on_checkout": "on", "checkout_date": "2026-11-06",
+                },
+            )
+            issues = {i["room"]: i for i in app.config["STORE"].load_issues()}
+            self.assertEqual(issues["101"]["category"], "guest")
+            self.assertEqual(issues["102"]["category"], "maintenance")
+            self.assertIsNone(issues["102"]["checkout_date"])
+            self.assertEqual(issues["104"]["checkout_date"], "2026-11-05")
+            self.assertIsNone(issues["105"]["checkout_date"])
+
+            # Both categories render as separate columns on one page.
+            page = client.get("/dashboard").data.decode()
+            columns = page.split('<section data-category=')[1:]
+            self.assertEqual(len(columns), 2)
+            guest, maint = columns
+            self.assertIn("Needs extra towels", guest)
+            self.assertNotIn("Fix door", guest)
+            self.assertIn("2026-11-05", guest)
+            self.assertIn("Fix door", maint)
+            self.assertNotIn("Needs extra towels", maint)
+            self.assertNotIn("2026-11-06", page)
+
+            # Sorting by room number, remembered for the session.
+            client.post("/issues", data={"room": "9", "description": "Late room", "category": "guest"})
+            client.post("/issues", data={"room": "10", "description": "Later room", "category": "guest"})
+            default_page = client.get("/dashboard").data.decode()
+            self.assertLess(default_page.index("Needs extra towels"), default_page.index("Late room"))
+            self.assertLess(default_page.index("Late room"), default_page.index("Later room"))
+            by_room = client.get("/dashboard?sort=room").data.decode()
+            self.assertLess(by_room.index("Late room"), by_room.index("Later room"))
+            self.assertLess(by_room.index("Later room"), by_room.index("Needs extra towels"))
+            self.assertIn("Later room", client.get("/dashboard").data.decode())
+            client.get("/dashboard?sort=default")
+            for room in ("9", "10"):
+                issue = next(i for i in app.config["STORE"].load_issues() if i["room"] == room)
+                app.config["STORE"].close_issue(issue["id"], "maintenance", "done")
+
+            # Several issues for one room can be submitted at once.
+            before = len(app.config["STORE"].load_issues())
+            multi = client.post(
+                "/issues",
+                data={
+                    "room": "220",
+                    "row": ["1", "2"],
+                    "description_1": "TV remote missing", "category_1": "guest",
+                    "do_on_checkout_1": "on", "checkout_date_1": "2026-12-01",
+                    "description_2": "Closet door off track", "category_2": "maintenance",
+                },
+                follow_redirects=True,
+            )
+            self.assertIn(b"2 issues submitted for room 220.", multi.data)
+            added = app.config["STORE"].load_issues()[before:]
+            self.assertEqual([(i["room"], i["category"], i["checkout_date"]) for i in added],
+                             [("220", "guest", "2026-12-01"), ("220", "maintenance", None)])
+            # A blank description rejects the whole submission.
+            client.post("/issues", data={"room": "221", "row": ["1", "2"], "description_1": "ok", "description_2": " "})
+            self.assertEqual(len(app.config["STORE"].load_issues()), before + 2)
+            for issue in added:
+                app.config["STORE"].close_issue(issue["id"], "maintenance", "done")
+
+            # Open issues can be edited by any dashboard role.
+            target = next(i for i in app.config["STORE"].load_issues() if i["room"] == "104")
+            edited = client.post(
+                f"/issues/{target['id']}/edit",
+                data={"room": "105a", "description": "Swap feather pillows", "category": "guest",
+                      "do_on_checkout": "on", "checkout_date": "2026-11-20"},
+            )
+            self.assertEqual(edited.get_json()["issue"]["room"], "105A")
+            saved = next(i for i in app.config["STORE"].load_issues() if i["id"] == target["id"])
+            self.assertEqual((saved["description"], saved["checkout_date"], saved["edited_by"]),
+                             ("Swap feather pillows", "2026-11-20", "frontdesk"))
+            as_maint = client.post(f"/issues/{target['id']}/edit", data={"room": "105A", "description": "x", "category": "maintenance"})
+            self.assertEqual(as_maint.status_code, 200)
+            saved = next(i for i in app.config["STORE"].load_issues() if i["id"] == target["id"])
+            self.assertIsNone(saved["checkout_date"])
+            for bad in ({"room": "", "description": "x", "category": "guest"},
+                        {"room": "1", "description": "x", "category": "nope"},
+                        {"room": "1", "description": "x", "category": "guest", "do_on_checkout": "on"}):
+                self.assertEqual(client.post(f"/issues/{target['id']}/edit", data=bad).status_code, 400)
+            self.assertEqual(client.post("/issues/missing/edit", data={"room": "1", "description": "x", "category": "guest"}).status_code, 404)
+            store = app.config["STORE"]
+            all_issues = store.load_issues()
+            for i in all_issues:
+                if i["id"] == target["id"]:
+                    i["room"] = "104"
+                    i["category"] = "guest"
+                    i["checkout_date"] = "2026-11-05"
+            store.save_issues(all_issues)
+
+            # Supervisors and maintenance can move issues; front desk cannot.
+            issue_id = next(i["id"] for i in app.config["STORE"].load_issues() if i["room"] == "104")
+            denied = client.post(f"/issues/{issue_id}/move", data={"category": "maintenance"})
+            self.assertEqual(denied.status_code, 403)
+            for role in ("supervisor", "maintenance"):
+                with client.session_transaction() as session:
+                    session["user"] = role
+                    session["role"] = role
+                moved = client.post(f"/issues/{issue_id}/move", data={"category": "maintenance"})
+                self.assertEqual(moved.get_json()["category"], "maintenance")
+                issue = next(i for i in app.config["STORE"].load_issues() if i["id"] == issue_id)
+                self.assertIsNone(issue["checkout_date"])
+                self.assertEqual(client.post(f"/issues/{issue_id}/move", data={"category": "bogus"}).status_code, 400)
+                client.post(f"/issues/{issue_id}/move", data={"category": "guest"})
+            with client.session_transaction() as session:
+                session["user"] = "frontdesk"
+                session["role"] = "front_desk"
+
+            # Checkout requires a valid date.
+            client.post("/issues", data={"room": "103", "description": "x", "category": "guest", "do_on_checkout": "on"})
+            self.assertEqual(len(app.config["STORE"].load_issues()), 8)
+
+            with client.session_transaction() as session:
+                session["user"] = "supervisor"
+                session["role"] = "supervisor"
+            self.assertIn(b'value="maintenance" checked', client.get("/dashboard").data)
+
     def test_maintenance_user_can_save_push_subscription(self):
         with tempfile.TemporaryDirectory() as config_path:
             app = self.make_app(config_path)

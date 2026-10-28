@@ -18,6 +18,9 @@ from py_vapid import Vapid
 from pywebpush import WebPushException, webpush
 
 DEFAULT_LOCATION = "HCK"
+ISSUE_CATEGORIES = ("guest", "maintenance")
+DEFAULT_CATEGORY = "maintenance"
+MAX_ISSUES_PER_SUBMIT = 20
 
 DEFAULT_SETTINGS = {
     "locations": [DEFAULT_LOCATION],
@@ -110,7 +113,15 @@ class Store:
         )
         return vapid, urlsafe_b64encode(public_key).rstrip(b"=").decode("ascii")
 
-    def add_issue(self, room: str, description: str, created_by: str, location: str) -> dict:
+    def add_issue(
+        self,
+        room: str,
+        description: str,
+        created_by: str,
+        location: str,
+        category: str = DEFAULT_CATEGORY,
+        checkout_date: str | None = None,
+    ) -> dict:
         issues = self.load_issues()
         issue = {
             "id": str(uuid.uuid4()),
@@ -120,6 +131,9 @@ class Store:
             "created_at": datetime.now(timezone.utc).isoformat(),
             "created_by": created_by,
             "location": location,
+            "category": category if category in ISSUE_CATEGORIES else DEFAULT_CATEGORY,
+            "do_on_checkout": bool(checkout_date),
+            "checkout_date": checkout_date or None,
             "closed_at": None,
             "closed_by": None,
             "resolution": None,
@@ -127,6 +141,54 @@ class Store:
         issues.append(issue)
         self.save_issues(issues)
         return issue
+
+    def move_issue(self, issue_id: str, category: str, location: str) -> dict | None:
+        """Move an open issue to another category, returning the updated issue."""
+        issues = self.load_issues()
+        for issue in issues:
+            if (
+                issue["id"] == issue_id
+                and issue["status"] == "open"
+                and issue.get("location", DEFAULT_LOCATION) == location
+            ):
+                issue["category"] = category
+                if category != "guest":
+                    # "On checkout" only applies to guest issues.
+                    issue["do_on_checkout"] = False
+                    issue["checkout_date"] = None
+                self.save_issues(issues)
+                return issue
+        return None
+
+    def update_issue(
+        self,
+        issue_id: str,
+        location: str,
+        edited_by: str,
+        room: str,
+        description: str,
+        category: str,
+        checkout_date: str | None,
+    ) -> dict | None:
+        """Edit an open issue's details, returning the updated issue."""
+        issues = self.load_issues()
+        for issue in issues:
+            if (
+                issue["id"] == issue_id
+                and issue["status"] == "open"
+                and issue.get("location", DEFAULT_LOCATION) == location
+            ):
+                issue["room"] = room.strip().upper()
+                issue["description"] = description.strip()
+                issue["category"] = category
+                # "On checkout" only applies to guest issues.
+                issue["checkout_date"] = checkout_date if category == "guest" else None
+                issue["do_on_checkout"] = bool(issue["checkout_date"])
+                issue["edited_at"] = datetime.now(timezone.utc).isoformat()
+                issue["edited_by"] = edited_by
+                self.save_issues(issues)
+                return issue
+        return None
 
     def close_issue(self, issue_id: str, closed_by: str, resolution: str, location: str | None = None) -> bool:
         issues = self.load_issues()
@@ -259,6 +321,15 @@ def create_app() -> Flask:
             for issue in store.load_issues()
             if issue.get("location", DEFAULT_LOCATION) == location
         ]
+
+    def _room_sort_key(room: str):
+        digits = "".join(ch for ch in str(room) if ch.isdigit())
+        return (0, int(digits), str(room)) if digits else (1, str(room))
+
+    def _issue_category(issue: dict) -> str:
+        """Issues saved before categories existed are treated as maintenance issues."""
+        category = issue.get("category", DEFAULT_CATEGORY)
+        return category if category in ISSUE_CATEGORIES else DEFAULT_CATEGORY
 
     def _send_email_via_resend(to_email: str, subject: str, html: str) -> tuple[bool, str]:
         api_key = app.config["RESEND_API_KEY"].strip()
@@ -505,13 +576,39 @@ def create_app() -> Flask:
             session.clear()
             return redirect(url_for("login"))
         issues = _issues_for_location(location)
-        open_issues = sorted(
+        default_tab = "guest" if role == "front_desk" else DEFAULT_CATEGORY
+        tab = request.args.get("tab", default_tab)
+        if tab not in ISSUE_CATEGORIES:
+            tab = default_tab
+        # The chosen sort sticks for the session so it survives form submissions.
+        sort = request.args.get("sort") or session.get("issue_sort", "default")
+        if sort not in ("default", "room"):
+            sort = "default"
+        session["issue_sort"] = sort
+        all_open = sorted(
             (i for i in issues if i["status"] == "open"),
             key=lambda x: x["created_at"],
         )
+        if sort == "room":
+            all_open.sort(key=lambda x: _room_sort_key(x["room"]))
+        tab_counts = {
+            category: sum(1 for i in all_open if _issue_category(i) == category)
+            for category in ISSUE_CATEGORIES
+        }
+        open_by_category = {
+            category: [i for i in all_open if _issue_category(i) == category]
+            for category in ISSUE_CATEGORIES
+        }
 
         if role == "maintenance":
-            return render_template("maintenance_dashboard.html", open_issues=open_issues)
+            return render_template(
+                "maintenance_dashboard.html",
+                open_by_category=open_by_category,
+                tab=tab,
+                sort=sort,
+                tab_counts=tab_counts,
+                default_category=default_tab,
+            )
 
         cutoff = (datetime.now(timezone.utc) - timedelta(weeks=2)).isoformat()
         recent_closed = sorted(
@@ -519,10 +616,20 @@ def create_app() -> Flask:
             key=lambda x: x.get("closed_at", ""),
             reverse=True,
         )
+        if sort == "room":
+            recent_closed.sort(key=lambda x: _room_sort_key(x["room"]))
+        closed_by_category = {
+            category: [i for i in recent_closed if _issue_category(i) == category]
+            for category in ISSUE_CATEGORIES
+        }
         return render_template(
             "frontdesk_dashboard.html",
-            open_issues=open_issues,
-            recent_closed=recent_closed,
+            open_by_category=open_by_category,
+            closed_by_category=closed_by_category,
+            tab=tab,
+            sort=sort,
+            tab_counts=tab_counts,
+            default_category=default_tab,
         )
 
     @app.get("/history")
@@ -544,14 +651,10 @@ def create_app() -> Flask:
         for issue in closed:
             by_room.setdefault(issue["room"], []).append(issue)
 
-        def room_sort_key(room: str):
-            digits = "".join(ch for ch in str(room) if ch.isdigit())
-            return (0, int(digits), str(room)) if digits else (1, str(room))
-
         return render_template(
             "history.html",
             by_room=by_room,
-            rooms=sorted(by_room, key=room_sort_key),
+            rooms=sorted(by_room, key=_room_sort_key),
         )
 
     @app.post("/issues")
@@ -560,18 +663,86 @@ def create_app() -> Flask:
         if guard:
             return guard
         room = request.form.get("room", "").strip()
-        description = request.form.get("description", "").strip()
-        if not room or not description:
-            flash("Room and description are required.", "error")
-            return redirect(url_for("dashboard"))
+        default_category = "guest" if session.get("role") == "front_desk" else DEFAULT_CATEGORY
+        # Each row is one issue for the room; its fields carry the row id as a suffix.
+        # A form without row ids is treated as a single issue using the plain field names.
+        row_ids = request.form.getlist("row")[:MAX_ISSUES_PER_SUBMIT] or [""]
+        entries = []
+        for row_id in row_ids:
+            suffix = f"_{row_id}" if row_id else ""
+            description = request.form.get(f"description{suffix}", "").strip()
+            category = request.form.get(f"category{suffix}", "").strip()
+            if category not in ISSUE_CATEGORIES:
+                category = default_category
+            if not room or not description:
+                flash("Room and a description for every issue are required.", "error")
+                return redirect(url_for("dashboard", tab=category))
+            checkout_date = None
+            if category == "guest" and request.form.get(f"do_on_checkout{suffix}"):
+                raw_date = request.form.get(f"checkout_date{suffix}", "").strip()
+                try:
+                    checkout_date = datetime.strptime(raw_date, "%Y-%m-%d").date().isoformat()
+                except ValueError:
+                    flash("Select a valid checkout date.", "error")
+                    return redirect(url_for("dashboard", tab=category))
+            entries.append((description, category, checkout_date))
         location = _location_for_current_user()
         if not location:
             session.clear()
             return redirect(url_for("login"))
-        issue = store.add_issue(room, description, session["user"], location)
-        _send_new_issue_notifications(issue)
-        flash(f"Issue submitted for room {room.upper()}.", "success")
-        return redirect(url_for("dashboard"))
+        for description, category, checkout_date in entries:
+            issue = store.add_issue(room, description, session["user"], location, category, checkout_date)
+            _send_new_issue_notifications(issue)
+        if len(entries) == 1:
+            flash(f"Issue submitted for room {room.upper()}.", "success")
+        else:
+            flash(f"{len(entries)} issues submitted for room {room.upper()}.", "success")
+        return redirect(url_for("dashboard", tab=entries[0][1]))
+
+    @app.post("/issues/<issue_id>/edit")
+    def edit_issue(issue_id):
+        if session.get("role") not in ("front_desk", "supervisor", "maintenance", "admin"):
+            return jsonify({"error": "You cannot edit issues."}), 403
+        room = request.form.get("room", "").strip()
+        description = request.form.get("description", "").strip()
+        category = request.form.get("category", "").strip()
+        if not room or not description:
+            return jsonify({"error": "Room and description are required."}), 400
+        if category not in ISSUE_CATEGORIES:
+            return jsonify({"error": "Select a valid category."}), 400
+        checkout_date = None
+        if category == "guest" and request.form.get("do_on_checkout"):
+            try:
+                checkout_date = datetime.strptime(request.form.get("checkout_date", "").strip(), "%Y-%m-%d").date().isoformat()
+            except ValueError:
+                return jsonify({"error": "Select a valid checkout date."}), 400
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return jsonify({"error": "Your account is no longer available."}), 403
+        issue = store.update_issue(issue_id, location, session["user"], room, description, category, checkout_date)
+        if not issue:
+            return jsonify({"error": "Issue was not found at your assigned location."}), 404
+        return jsonify({"ok": True, "issue": {
+            "room": issue["room"], "description": issue["description"],
+            "category": issue["category"], "checkout_date": issue["checkout_date"],
+        }})
+
+    @app.post("/issues/<issue_id>/move")
+    def move_issue(issue_id):
+        if session.get("role") not in ("supervisor", "admin", "maintenance"):
+            return jsonify({"error": "You cannot move issues."}), 403
+        category = request.form.get("category", "").strip()
+        if category not in ISSUE_CATEGORIES:
+            return jsonify({"error": "Select a valid category."}), 400
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return jsonify({"error": "Your account is no longer available."}), 403
+        issue = store.move_issue(issue_id, category, location)
+        if not issue:
+            return jsonify({"error": "Issue was not found at your assigned location."}), 404
+        return jsonify({"ok": True, "category": issue["category"]})
 
     @app.post("/issues/<issue_id>/close")
     def close_issue(issue_id):
@@ -791,7 +962,7 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         output = StringIO()
         writer = csv.writer(output)
-        writer.writerow(["Room", "Description", "Status", "Reported", "Reported by", "Resolved", "Resolved by", "Resolution"])
+        writer.writerow(["Room", "Type", "On checkout", "Description", "Status", "Reported", "Reported by", "Resolved", "Resolved by", "Resolution"])
         issues = sorted(
             _issues_for_location(location),
             key=lambda item: item["created_at"],
@@ -799,7 +970,8 @@ def create_app() -> Flask:
         for issue in issues:
             writer.writerow(
                 [
-                    issue["room"], issue["description"], issue["status"], issue["created_at"], issue["created_by"],
+                    issue["room"], _issue_category(issue), issue.get("checkout_date") or "",
+                    issue["description"], issue["status"], issue["created_at"], issue["created_by"],
                     issue.get("closed_at") or "", issue.get("closed_by") or "", issue.get("resolution") or "",
                 ]
             )

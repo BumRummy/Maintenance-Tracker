@@ -1,0 +1,13 @@
+<div class="tabs" role="tablist">
+  <a class="tab {{ 'active' if tab == 'guest' }}" role="tab" href="{{ url_for('dashboard', tab='guest', sort=sort) }}">Guest Issues <span class="count-badge">{{ tab_counts.guest }}</span></a>
+  <a class="tab {{ 'active' if tab == 'maintenance' }}" role="tab" href="{{ url_for('dashboard', tab='maintenance', sort=sort) }}">Maintenance Issues <span class="count-badge">{{ tab_counts.maintenance }}</span></a>
+</div>
+<form method="get" action="{{ url_for('dashboard') }}" class="sort-form">
+  <input type="hidden" name="tab" value="{{ tab }}">
+  <label class="sort-label">Sort by
+    <select name="sort" onchange="this.form.submit()">
+      <option value="default" {{ 'selected' if sort == 'default' }}>Default (oldest first)</option>
+      <option value="room" {{ 'selected' if sort == 'room' }}>Room number</option>
+    </select>
+  </label>
+</form>

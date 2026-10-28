@@ -1,9 +1,11 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="page-header">
-  <h1>Open Issues <span class="count-badge">{{ open_issues | length }}</span></h1>
+  <h1>Issues</h1>
   <button class="btn-primary btn-add-issue" id="open-modal-btn" type="button" aria-label="Add maintenance issue">+</button>
 </div>
+
+{% include '_issue_tabs.html' %}
 
 <div id="new-issue-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="new-issue-title">
   <div class="modal">
@@ -12,9 +14,7 @@
       <label>Room Number
         <input name="room" required placeholder="e.g. 101">
       </label>
-      <label>Description
-        <textarea name="description" required rows="3" placeholder="Describe the issue…"></textarea>
-      </label>
+      {% include '_issue_rows.html' %}
       <div class="modal-actions">
         <button type="submit" class="btn-primary">Submit Issue</button>
         <button type="button" id="close-modal-btn">Cancel</button>
@@ -23,30 +23,39 @@
   </div>
 </div>
 
-{% if open_issues %}
-<div class="tile-grid">
-  {% for issue in open_issues %}
-  <div class="tile">
-    <div class="tile-room">Room {{ issue.room }}</div>
-    <div class="tile-desc">{{ issue.description }}</div>
-    <div class="tile-footer">
-      <span class="tile-meta">Reported {{ issue.created_at | fmtdate }}</span>
-      <span class="tile-meta">by {{ issue.created_by }}</span>
+<div class="issue-columns">
+  {% for cat, label in (('guest', 'Guest Issues'), ('maintenance', 'Maintenance Issues')) %}
+  <section data-category="{{ cat }}" class="issue-column {{ 'active' if tab == cat }}">
+    <h2 class="column-title">{{ label }} <span class="count-badge" data-count>{{ tab_counts[cat] }}</span></h2>
+    <div class="tile-grid" data-open-grid>
+      {% for issue in open_by_category[cat] %}
+      <div class="tile" data-id="{{ issue.id }}" data-room="{{ issue.room }}" data-created="{{ issue.created_at }}" data-category="{{ cat }}" data-checkout="{{ issue.checkout_date or '' }}">
+        <div class="tile-room">Room {{ issue.room }}</div>
+        <div class="tile-desc">{{ issue.description }}</div>
+        {% if issue.checkout_date %}<div class="tile-checkout">&#128197; On checkout: {{ issue.checkout_date }}</div>{% endif %}
+        <div class="tile-footer">
+          <span class="tile-meta">Reported {{ issue.created_at | fmtdate }}</span>
+          <span class="tile-meta">by {{ issue.created_by }}</span>
+        </div>
+        <button type="button" class="edit-btn">Edit</button>
+        <button type="button" class="move-btn" data-move-to="{{ 'maintenance' if cat == 'guest' else 'guest' }}">
+          Move to {{ 'Maintenance' if cat == 'guest' else 'Guest' }} Issues
+        </button>
+        <form method="post" action="{{ url_for('close_issue', issue_id=issue.id) }}" class="resolution-form">
+          <label class="resolution-label">Resolution
+            <textarea name="resolution" required rows="2" placeholder="Describe what fixed this issue..."></textarea>
+          </label>
+          <button type="submit" class="btn-success">&#10003; Mark as Fixed</button>
+        </form>
+      </div>
+      {% endfor %}
     </div>
-    <form method="post" action="{{ url_for('close_issue', issue_id=issue.id) }}" class="resolution-form">
-      <label class="resolution-label">Resolution
-        <textarea name="resolution" required rows="2" placeholder="Describe what fixed this issue..."></textarea>
-      </label>
-      <button type="submit" class="btn-success">&#10003; Mark as Fixed</button>
-    </form>
-  </div>
+    {% if not open_by_category[cat] %}
+    <div class="empty-state" data-empty><p>No open {{ label | lower }} — all clear!</p></div>
+    {% endif %}
+  </section>
   {% endfor %}
 </div>
-{% else %}
-<div class="empty-state">
-  <p>No open issues — all clear!</p>
-</div>
-{% endif %}
 
 <script>
   const modal = document.getElementById('new-issue-modal');
@@ -59,4 +68,7 @@
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.remove('open'); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') modal.classList.remove('open'); });
 </script>
+{% include '_issue_edit_modal.html' %}
+{% include '_issue_move_script.html' %}
+{% include '_issue_form_script.html' %}
 {% endblock %}
