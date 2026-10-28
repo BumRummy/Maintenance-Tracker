@@ -1,0 +1,19 @@
+<script>
+  (function () {
+    const box = document.getElementById('do-on-checkout');
+    const option = document.getElementById('checkout-option');
+    const wrap = document.getElementById('checkout-date-wrap');
+    const date = document.getElementById('checkout-date');
+    const radios = document.querySelectorAll('input[name="category"]');
+    function sync() {
+      const guest = document.querySelector('input[name="category"]:checked').value === 'guest';
+      option.hidden = !guest;
+      if (!guest) box.checked = false;
+      wrap.hidden = !(guest && box.checked);
+      date.required = guest && box.checked;
+    }
+    box.addEventListener('change', () => { sync(); if (box.checked) date.focus(); });
+    radios.forEach(r => r.addEventListener('change', sync));
+    sync();
+  })();
+</script>

@@ -129,6 +129,61 @@ class MaintenanceIssueTests(unittest.TestCase):
             issue = app.config["STORE"].load_issues()[0]
             self.assertEqual(issue["created_by"], "maintenance")
 
+    def test_issue_categories_tabs_and_checkout_date(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session["user"] = "frontdesk"
+                session["role"] = "front_desk"
+
+            # Front desk defaults to the guest tab and guest category.
+            page = client.get("/dashboard").data
+            self.assertIn(b'value="guest" checked', page)
+            client.post("/issues", data={"room": "101", "description": "Needs extra towels"})
+            client.post(
+                "/issues",
+                data={"room": "102", "description": "Fix door", "category": "maintenance"},
+            )
+            client.post(
+                "/issues",
+                data={
+                    "room": "104", "description": "Swap pillows", "category": "guest",
+                    "do_on_checkout": "on", "checkout_date": "2026-11-05",
+                },
+            )
+            # Checkout dates are ignored for maintenance issues.
+            client.post(
+                "/issues",
+                data={
+                    "room": "105", "description": "Paint wall", "category": "maintenance",
+                    "do_on_checkout": "on", "checkout_date": "2026-11-06",
+                },
+            )
+            issues = {i["room"]: i for i in app.config["STORE"].load_issues()}
+            self.assertEqual(issues["101"]["category"], "guest")
+            self.assertEqual(issues["102"]["category"], "maintenance")
+            self.assertIsNone(issues["102"]["checkout_date"])
+            self.assertEqual(issues["104"]["checkout_date"], "2026-11-05")
+            self.assertIsNone(issues["105"]["checkout_date"])
+
+            guest = client.get("/dashboard?tab=guest").data
+            self.assertIn(b"Needs extra towels", guest)
+            self.assertNotIn(b"Fix door", guest)
+            self.assertIn(b"2026-11-05", guest)
+            maint = client.get("/dashboard?tab=maintenance").data
+            self.assertIn(b"Fix door", maint)
+            self.assertNotIn(b"2026-11-06", maint)
+
+            # Checkout requires a valid date.
+            client.post("/issues", data={"room": "103", "description": "x", "category": "guest", "do_on_checkout": "on"})
+            self.assertEqual(len(app.config["STORE"].load_issues()), 4)
+
+            with client.session_transaction() as session:
+                session["user"] = "supervisor"
+                session["role"] = "supervisor"
+            self.assertIn(b'value="maintenance" checked', client.get("/dashboard").data)
+
     def test_maintenance_user_can_save_push_subscription(self):
         with tempfile.TemporaryDirectory() as config_path:
             app = self.make_app(config_path)

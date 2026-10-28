@@ -115,3 +115,14 @@ button:hover { background: #e2e8f0; }
 .table-scroll { overflow-x: auto; }
 .compact-form { gap: .5rem; }
 .self-label { font-size: .8rem; color: #94a3b8; }
+
+/* Issue tabs and form extras */
+.tabs { display: flex; gap: .5rem; margin-bottom: 1.5rem; border-bottom: 2px solid #e2e8f0; flex-wrap: wrap; }
+.tab { padding: .6rem 1rem; color: #64748b; text-decoration: none; font-weight: 600; border-bottom: 3px solid transparent; margin-bottom: -2px; display: flex; align-items: center; gap: .5rem; }
+.tab:hover { color: #1e293b; }
+.tab.active { color: #1d4ed8; border-bottom-color: #2563eb; }
+.category-picker { border: 1px solid #d1d5db; border-radius: 6px; padding: .5rem .75rem; display: flex; gap: 1.25rem; flex-wrap: wrap; margin: 0; }
+.category-picker legend { font-size: .85rem; color: #64748b; padding: 0 .3rem; }
+.radio-option, .checkbox-option { display: flex; align-items: center; gap: .5rem; }
+.radio-option input, .checkbox-option input { padding: 0; }
+.tile-checkout { font-size: .85rem; color: #92400e; background: #fef3c7; border-radius: 6px; padding: .35rem .6rem; }

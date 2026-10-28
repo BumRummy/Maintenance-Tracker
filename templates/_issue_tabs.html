@@ -1,0 +1,4 @@
+<div class="tabs" role="tablist">
+  <a class="tab {{ 'active' if tab == 'guest' }}" role="tab" href="{{ url_for('dashboard', tab='guest') }}">Guest Issues <span class="count-badge">{{ tab_counts.guest }}</span></a>
+  <a class="tab {{ 'active' if tab == 'maintenance' }}" role="tab" href="{{ url_for('dashboard', tab='maintenance') }}">Maintenance Issues <span class="count-badge">{{ tab_counts.maintenance }}</span></a>
+</div>
