@@ -535,12 +535,15 @@ def create_app() -> Flask:
             category: sum(1 for i in all_open if _issue_category(i) == category)
             for category in ISSUE_CATEGORIES
         }
-        open_issues = [i for i in all_open if _issue_category(i) == tab]
+        open_by_category = {
+            category: [i for i in all_open if _issue_category(i) == category]
+            for category in ISSUE_CATEGORIES
+        }
 
         if role == "maintenance":
             return render_template(
                 "maintenance_dashboard.html",
-                open_issues=open_issues,
+                open_by_category=open_by_category,
                 tab=tab,
                 tab_counts=tab_counts,
                 default_category=default_tab,
@@ -552,11 +555,14 @@ def create_app() -> Flask:
             key=lambda x: x.get("closed_at", ""),
             reverse=True,
         )
-        recent_closed = [i for i in recent_closed if _issue_category(i) == tab]
+        closed_by_category = {
+            category: [i for i in recent_closed if _issue_category(i) == category]
+            for category in ISSUE_CATEGORIES
+        }
         return render_template(
             "frontdesk_dashboard.html",
-            open_issues=open_issues,
-            recent_closed=recent_closed,
+            open_by_category=open_by_category,
+            closed_by_category=closed_by_category,
             tab=tab,
             tab_counts=tab_counts,
             default_category=default_tab,

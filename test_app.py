@@ -167,13 +167,17 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertEqual(issues["104"]["checkout_date"], "2026-11-05")
             self.assertIsNone(issues["105"]["checkout_date"])
 
-            guest = client.get("/dashboard?tab=guest").data
-            self.assertIn(b"Needs extra towels", guest)
-            self.assertNotIn(b"Fix door", guest)
-            self.assertIn(b"2026-11-05", guest)
-            maint = client.get("/dashboard?tab=maintenance").data
-            self.assertIn(b"Fix door", maint)
-            self.assertNotIn(b"2026-11-06", maint)
+            # Both categories render as separate columns on one page.
+            page = client.get("/dashboard").data.decode()
+            columns = page.split('<section class="issue-column')[1:]
+            self.assertEqual(len(columns), 2)
+            guest, maint = columns
+            self.assertIn("Needs extra towels", guest)
+            self.assertNotIn("Fix door", guest)
+            self.assertIn("2026-11-05", guest)
+            self.assertIn("Fix door", maint)
+            self.assertNotIn("Needs extra towels", maint)
+            self.assertNotIn("2026-11-06", page)
 
             # Checkout requires a valid date.
             client.post("/issues", data={"room": "103", "description": "x", "category": "guest", "do_on_checkout": "on"})

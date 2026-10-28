@@ -1,7 +1,7 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="page-header">
-  <h1>{{ 'Guest' if tab == 'guest' else 'Maintenance' }} Issues</h1>
+  <h1>Issues</h1>
   <div class="dashboard-actions">
     {% if session.role == 'supervisor' %}
     <a class="settings-button" href="{{ url_for('supervisor') }}" aria-label="Supervisor settings" title="Supervisor settings">&#9881;</a>
@@ -31,46 +31,48 @@
   </div>
 </div>
 
-{% if open_issues %}
-<div class="tile-grid">
-  {% for issue in open_issues %}
-  <div class="tile">
-    <div class="tile-room">Room {{ issue.room }}</div>
-    <div class="tile-desc">{{ issue.description }}</div>
-    {% if issue.checkout_date %}<div class="tile-checkout">&#128197; On checkout: {{ issue.checkout_date }}</div>{% endif %}
-    <div class="tile-footer">
-      <span class="tile-meta">Reported {{ issue.created_at | fmtdate }}</span>
-      <span class="tile-meta">by {{ issue.created_by }}</span>
+<div class="issue-columns">
+  {% for cat, label in (('guest', 'Guest Issues'), ('maintenance', 'Maintenance Issues')) %}
+  <section class="issue-column {{ 'active' if tab == cat }}">
+    <h2 class="column-title">{{ label }} <span class="count-badge">{{ tab_counts[cat] }}</span></h2>
+    {% if open_by_category[cat] %}
+    <div class="tile-grid">
+      {% for issue in open_by_category[cat] %}
+      <div class="tile">
+        <div class="tile-room">Room {{ issue.room }}</div>
+        <div class="tile-desc">{{ issue.description }}</div>
+        {% if issue.checkout_date %}<div class="tile-checkout">&#128197; On checkout: {{ issue.checkout_date }}</div>{% endif %}
+        <div class="tile-footer">
+          <span class="tile-meta">Reported {{ issue.created_at | fmtdate }}</span>
+          <span class="tile-meta">by {{ issue.created_by }}</span>
+        </div>
+      </div>
+      {% endfor %}
     </div>
-  </div>
+    {% else %}
+    <div class="empty-state"><p>No open {{ label | lower }}. Use <strong>+ New Issue</strong> to report one.</p></div>
+    {% endif %}
+
+    <p class="section-title">Recently Resolved <span class="count-badge" style="background:#22c55e">{{ closed_by_category[cat] | length }}</span></p>
+    {% if closed_by_category[cat] %}
+    <div class="tile-grid">
+      {% for issue in closed_by_category[cat] %}
+      <div class="tile resolved">
+        <div class="tile-room">Room {{ issue.room }}</div>
+        <div class="tile-desc">{{ issue.description }}</div>
+        <div class="tile-resolution"><strong>Resolution:</strong> {{ issue.resolution or '—' }}</div>
+        <div class="tile-footer">
+          <span class="tile-meta">Resolved {{ issue.closed_at | fmtdate }}</span>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="empty-state"><p>No resolved issues in the last 2 weeks.</p></div>
+    {% endif %}
+  </section>
   {% endfor %}
 </div>
-{% else %}
-<div class="empty-state">
-  <p>No open issues. Use <strong>+ New Issue</strong> to report one.</p>
-</div>
-{% endif %}
-
-<p class="section-title">Recently Resolved <span class="count-badge" style="background:#22c55e">{{ recent_closed | length }}</span></p>
-
-{% if recent_closed %}
-<div class="tile-grid">
-  {% for issue in recent_closed %}
-  <div class="tile resolved">
-    <div class="tile-room">Room {{ issue.room }}</div>
-    <div class="tile-desc">{{ issue.description }}</div>
-    <div class="tile-resolution"><strong>Resolution:</strong> {{ issue.resolution or '—' }}</div>
-    <div class="tile-footer">
-      <span class="tile-meta">Resolved {{ issue.closed_at | fmtdate }}</span>
-    </div>
-  </div>
-  {% endfor %}
-</div>
-{% else %}
-<div class="empty-state">
-  <p>No resolved issues in the last 2 weeks.</p>
-</div>
-{% endif %}
 
 <script>
   const modal = document.getElementById('new-issue-modal');

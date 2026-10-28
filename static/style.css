@@ -126,3 +126,15 @@ button:hover { background: #e2e8f0; }
 .radio-option, .checkbox-option { display: flex; align-items: center; gap: .5rem; }
 .radio-option input, .checkbox-option input { padding: 0; }
 .tile-checkout { font-size: .85rem; color: #92400e; background: #fef3c7; border-radius: 6px; padding: .35rem .6rem; }
+
+/* Desktop: show both categories side by side; narrow screens show the active tab only */
+.column-title { display: none; margin: 0 0 1rem; font-size: 1.1rem; color: #1e293b; align-items: center; gap: .5rem; }
+.issue-column { display: none; min-width: 0; }
+.issue-column.active { display: block; }
+@media (min-width: 900px) {
+  .tabs { display: none; }
+  .issue-columns { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; align-items: start; }
+  .issue-column { display: block; }
+  .column-title { display: flex; }
+  .issue-column .tile-grid { grid-template-columns: 1fr; }
+}
