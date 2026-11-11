@@ -785,19 +785,33 @@ def create_app() -> Flask:
 
     @app.post("/issues/<issue_id>/close")
     def close_issue(issue_id):
+        # The dashboard submits this with fetch so the page keeps its scroll position;
+        # a plain form post still works and redirects back to the dashboard.
+        wants_json = request.headers.get("X-Requested-With") == "fetch"
+        if wants_json and session.get("role") not in ("maintenance", "admin"):
+            return jsonify({"error": "You cannot complete issues."}), 403
         guard = _require(roles=("maintenance", "admin"))
         if guard:
             return guard
         resolution = request.form.get("resolution", "").strip()
         if not resolution:
+            if wants_json:
+                return jsonify({"error": "Resolution is required before marking an issue complete."}), 400
             flash("Resolution is required before marking an issue complete.", "error")
             return redirect(url_for("dashboard"))
         location = _location_for_current_user()
         if not location:
             session.clear()
+            if wants_json:
+                return jsonify({"error": "Your account is no longer available."}), 403
             return redirect(url_for("login"))
         if not store.close_issue(issue_id, session["user"], resolution, location):
+            if wants_json:
+                return jsonify({"error": "Issue was not found at your assigned location."}), 404
             flash("Issue was not found at your assigned location.", "error")
+            return redirect(url_for("dashboard"))
+        if wants_json:
+            return jsonify({"ok": True})
         return redirect(url_for("dashboard"))
 
     @app.route("/admin", methods=["GET", "POST"])

@@ -295,6 +295,27 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertEqual(client.get("/api/room-issues?room=").status_code, 400)
             self.assertIn(b'data-room="101"', client.get("/dashboard").data)
 
+    def test_completing_an_issue_via_fetch_returns_json_and_plain_post_redirects(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            store = app.config["STORE"]
+            first = store.add_issue("101", "One", "frontdesk", "HCK")
+            second = store.add_issue("102", "Two", "frontdesk", "HCK")
+            with client.session_transaction() as session:
+                session["user"] = "maintenance"
+                session["role"] = "maintenance"
+
+            blank = client.post(f"/issues/{first['id']}/close", data={"resolution": " "}, headers={"X-Requested-With": "fetch"})
+            self.assertEqual(blank.status_code, 400)
+            done = client.post(f"/issues/{first['id']}/close", data={"resolution": "Fixed"}, headers={"X-Requested-With": "fetch"})
+            self.assertEqual(done.get_json(), {"ok": True})
+            again = client.post(f"/issues/{first['id']}/close", data={"resolution": "Fixed"}, headers={"X-Requested-With": "fetch"})
+            self.assertEqual(again.status_code, 404)
+            plain = client.post(f"/issues/{second['id']}/close", data={"resolution": "Fixed"})
+            self.assertEqual(plain.status_code, 302)
+            self.assertTrue(all(i["status"] == "closed" for i in store.load_issues()))
+
     def test_maintenance_user_can_save_push_subscription(self):
         with tempfile.TemporaryDirectory() as config_path:
             app = self.make_app(config_path)
