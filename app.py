@@ -682,6 +682,15 @@ def create_app() -> Flask:
             return redirect(url_for("login"))
         return redirect(url_for("dashboard"))
 
+    # Public pages linked from the App Store listing; no sign-in required.
+    @app.get("/privacy")
+    def privacy():
+        return render_template("privacy.html", support_email=os.getenv("SUPPORT_EMAIL", "").strip())
+
+    @app.get("/support")
+    def support():
+        return render_template("support.html", support_email=os.getenv("SUPPORT_EMAIL", "").strip())
+
     @app.get("/service-worker.js")
     def service_worker():
         response = app.send_static_file("service-worker.js")
