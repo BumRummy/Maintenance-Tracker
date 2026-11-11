@@ -273,6 +273,28 @@ class MaintenanceIssueTests(unittest.TestCase):
                 session["role"] = "supervisor"
             self.assertIn(b'value="maintenance" checked', client.get("/dashboard").data)
 
+    def test_room_issues_lists_open_and_history_for_the_users_location(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            store = app.config["STORE"]
+            store.add_issue("101", "Leaky sink", "frontdesk", "HCK", "maintenance")
+            store.add_issue("101", "Extra towels", "frontdesk", "HCK", "guest", "2026-12-01")
+            old = store.add_issue("101", "Broken lamp", "frontdesk", "HCK")
+            store.close_issue(old["id"], "maintenance", "Replaced bulb")
+            store.add_issue("102", "Other room", "frontdesk", "HCK")
+            store.add_issue("101", "Other hotel", "frontdesk", "HCK2")
+
+            self.assertEqual(client.get("/api/room-issues?room=101").status_code, 403)
+            with client.session_transaction() as session:
+                session["user"] = "frontdesk"
+                session["role"] = "front_desk"
+            data = client.get("/api/room-issues?room=101").get_json()
+            self.assertEqual(sorted(i["description"] for i in data["open"]), ["Extra towels", "Leaky sink"])
+            self.assertEqual([i["resolution"] for i in data["history"]], ["Replaced bulb"])
+            self.assertEqual(client.get("/api/room-issues?room=").status_code, 400)
+            self.assertIn(b'data-room="101"', client.get("/dashboard").data)
+
     def test_maintenance_user_can_save_push_subscription(self):
         with tempfile.TemporaryDirectory() as config_path:
             app = self.make_app(config_path)

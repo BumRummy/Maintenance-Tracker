@@ -699,6 +699,44 @@ def create_app() -> Flask:
             flash(f"{len(entries)} issues submitted for room {room.upper()}.", "success")
         return redirect(url_for("dashboard", tab=entries[0][1]))
 
+    @app.get("/api/room-issues")
+    def room_issues():
+        """Open issues and resolved history for one room at the user's location."""
+        if session.get("role") not in ("front_desk", "supervisor", "maintenance", "admin"):
+            return jsonify({"error": "Access denied."}), 403
+        room = request.args.get("room", "").strip().upper()
+        if not room:
+            return jsonify({"error": "Room is required."}), 400
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return jsonify({"error": "Your account is no longer available."}), 403
+        room_items = [i for i in _issues_for_location(location) if str(i["room"]).upper() == room]
+
+        def summarize(issue: dict) -> dict:
+            return {
+                "category": _issue_category(issue),
+                "description": issue["description"],
+                "checkout_date": issue.get("checkout_date"),
+                "created_at": fmt_date(issue["created_at"]),
+                "created_by": issue["created_by"],
+                "closed_at": fmt_date(issue.get("closed_at")),
+                "closed_by": issue.get("closed_by"),
+                "resolution": issue.get("resolution"),
+            }
+
+        open_items = sorted((i for i in room_items if i["status"] == "open"), key=lambda x: x["created_at"])
+        closed_items = sorted(
+            (i for i in room_items if i["status"] == "closed"),
+            key=lambda x: x.get("closed_at") or "",
+            reverse=True,
+        )
+        return jsonify({
+            "room": room,
+            "open": [summarize(i) for i in open_items],
+            "history": [summarize(i) for i in closed_items],
+        })
+
     @app.post("/issues/<issue_id>/edit")
     def edit_issue(issue_id):
         if session.get("role") not in ("front_desk", "supervisor", "maintenance", "admin"):
