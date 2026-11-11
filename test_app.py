@@ -5,7 +5,9 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from app import create_app
+from werkzeug.security import check_password_hash
+
+from app import Store, create_app, is_password_hash
 
 
 class MaintenanceIssueTests(unittest.TestCase):
@@ -503,6 +505,210 @@ class MaintenanceIssueTests(unittest.TestCase):
                 self.assertEqual(report.status_code, 200)
                 self.assertIn(expected_issue, report.data)
                 self.assertNotIn(excluded_issue, report.data)
+
+
+class PasswordSecurityTests(unittest.TestCase):
+    """Password hashing, legacy plaintext migration, and seeded accounts."""
+
+    def make_app(self, config_path):
+        with patch.dict(os.environ, {"CONFIG_PATH": config_path, "TZ": "UTC", "TESTING": "1"}):
+            os.environ.pop("SECRET_KEY", None)
+            return create_app()
+
+    def write_users(self, config_path, users):
+        Path(config_path, "settings.json").write_text(json.dumps({"locations": ["HCK"], "users": users}))
+
+    def stored_user(self, app, username):
+        return next(u for u in app.config["STORE"].load_settings()["users"] if u["username"] == username)
+
+    def test_seeded_accounts_have_random_hashed_passwords_and_must_change_them(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            with self.assertLogs("app", level="WARNING") as logs:
+                app = self.make_app(config_path)
+            users = app.config["STORE"].load_settings()["users"]
+            self.assertEqual({u["username"] for u in users}, {"admin", "maintenance", "frontdesk", "supervisor"})
+            raw = Path(config_path, "settings.json").read_text()
+            for user in users:
+                self.assertTrue(user["force_password_change"])
+                self.assertTrue(is_password_hash(user["password"]))
+            self.assertNotIn("admin123", raw)
+            self.assertNotIn("changeme", raw)
+
+            client = app.test_client()
+            for username, password in (("admin", "admin123"), ("maintenance", "changeme")):
+                response = client.post("/login", data={"username": username, "password": password})
+                self.assertEqual(response.status_code, 200)
+                self.assertIn(b"Invalid username or password", response.data)
+
+            # The generated password is logged once and works, but forces a change.
+            message = "\n".join(logs.output)
+            admin_password = message.split("admin=", 1)[1].split(",", 1)[0]
+            response = client.post("/login", data={"username": "admin", "password": admin_password})
+            self.assertEqual(response.status_code, 302)
+            self.assertTrue(response.location.endswith("/first-login-password"))
+
+    def test_legacy_plaintext_password_is_rehashed_on_login(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            # Written after start-up so only the login path can migrate it.
+            self.write_users(config_path, [
+                {"username": "legacy", "password": "old-secret", "role": "maintenance", "email": "", "location": "HCK", "force_password_change": False},
+            ])
+            client = app.test_client()
+
+            response = client.post("/login", data={"username": "legacy", "password": "wrong"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(self.stored_user(app, "legacy")["password"], "old-secret")
+
+            response = client.post("/login", data={"username": "Legacy", "password": "old-secret"})
+            self.assertEqual(response.status_code, 302)
+            self.assertTrue(response.location.endswith("/dashboard"))
+            stored = self.stored_user(app, "legacy")["password"]
+            self.assertTrue(is_password_hash(stored))
+            self.assertTrue(check_password_hash(stored, "old-secret"))
+            self.assertNotIn("old-secret", Path(config_path, "settings.json").read_text())
+
+            # The same credentials keep working against the hash.
+            client.post("/logout")
+            response = client.post("/login", data={"username": "legacy", "password": "old-secret"})
+            self.assertEqual(response.status_code, 302)
+
+    def test_existing_plaintext_passwords_are_hashed_at_startup(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            self.write_users(config_path, [
+                {"username": "desk", "password": "desk-pass", "role": "front_desk", "email": "", "location": "HCK"},
+            ])
+            app = self.make_app(config_path)
+            stored = self.stored_user(app, "desk")["password"]
+            self.assertTrue(check_password_hash(stored, "desk-pass"))
+            response = app.test_client().post("/login", data={"username": "desk", "password": "desk-pass"})
+            self.assertEqual(response.status_code, 302)
+
+    def test_users_without_a_password_cannot_sign_in(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.write_users(config_path, [
+                {"username": "nopass", "password": None, "role": "maintenance", "email": "", "location": "HCK"},
+            ])
+            response = app.test_client().post("/login", data={"username": "nopass", "password": ""})
+            self.assertEqual(response.status_code, 200)
+
+    def test_every_password_write_is_hashed(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.write_users(config_path, [
+                {"username": "admin", "password": "admin-pass", "role": "admin", "email": "", "location": "HCK"},
+                {"username": "boss", "password": "boss-pass", "role": "supervisor", "email": "", "location": "HCK"},
+                {"username": "worker", "password": "worker-pass", "role": "maintenance", "email": "w@example.com", "location": "HCK"},
+            ])
+            client = app.test_client()
+
+            def assert_hashed(username, password):
+                stored = self.stored_user(app, username)["password"]
+                self.assertTrue(is_password_hash(stored), stored)
+                self.assertTrue(check_password_hash(stored, password))
+
+            with client.session_transaction() as session:
+                session["user"], session["role"] = "admin", "admin"
+            client.post("/admin", data={"action": "add_user", "username": "new-admin-user", "email": "a@example.com",
+                                        "password": "added-by-admin", "role": "front_desk", "location": "HCK"})
+            assert_hashed("new-admin-user", "added-by-admin")
+            client.post("/admin", data={"action": "change_password", "username": "worker", "new_password": "admin-set"})
+            assert_hashed("worker", "admin-set")
+
+            with client.session_transaction() as session:
+                session["user"], session["role"] = "boss", "supervisor"
+            client.post("/supervisor", data={"action": "add_user", "username": "new-sup-user", "email": "s@example.com",
+                                             "password": "added-by-sup", "role": "front_desk"})
+            assert_hashed("new-sup-user", "added-by-sup")
+            client.post("/supervisor", data={"action": "change_password", "username": "worker", "new_password": "sup-set"})
+            assert_hashed("worker", "sup-set")
+
+            with client.session_transaction() as session:
+                session["user"], session["role"] = "worker", "maintenance"
+            client.post("/first-login-password", data={"new_password": "first-login-pw", "confirm_password": "first-login-pw"})
+            assert_hashed("worker", "first-login-pw")
+
+            settings = app.config["STORE"].load_settings()
+            worker = next(u for u in settings["users"] if u["username"] == "worker")
+            worker["reset_token"] = "tok"
+            worker["reset_expires_at"] = "2999-01-01T00:00:00+00:00"
+            app.config["STORE"].save_settings(settings)
+            client.post("/reset-password/tok", data={"new_password": "reset-pw-123", "confirm_password": "reset-pw-123"})
+            assert_hashed("worker", "reset-pw-123")
+
+            raw = Path(config_path, "settings.json").read_text()
+            for plaintext in ("added-by-admin", "admin-set", "added-by-sup", "sup-set", "first-login-pw", "reset-pw-123"):
+                self.assertNotIn(plaintext, raw)
+
+
+class SecretKeyAndCookieTests(unittest.TestCase):
+    def make_app(self, config_path, **env):
+        values = {"CONFIG_PATH": config_path, "TZ": "UTC"}
+        values.update(env)
+        with patch.dict(os.environ, values):
+            if "SECRET_KEY" not in env:
+                os.environ.pop("SECRET_KEY", None)
+            for name in ("TESTING", "SESSION_COOKIE_SECURE", "FLASK_DEBUG"):
+                if name not in env:
+                    os.environ.pop(name, None)
+            return create_app()
+
+    def test_missing_secret_key_generates_and_persists_a_random_key(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            first = self.make_app(config_path, TESTING="1")
+            second = self.make_app(config_path, TESTING="1")
+            key_file = Path(config_path, "secret_key")
+            self.assertTrue(key_file.exists())
+            self.assertEqual(key_file.stat().st_mode & 0o777, 0o600)
+            self.assertNotEqual(first.secret_key, "change-me")
+            self.assertGreaterEqual(len(first.secret_key), 32)
+            self.assertEqual(first.secret_key, second.secret_key)
+            self.assertEqual(Store(config_path).load_or_create_secret_key(), first.secret_key)
+
+        with tempfile.TemporaryDirectory() as other_path:
+            self.assertNotEqual(self.make_app(other_path, TESTING="1").secret_key, first.secret_key)
+
+    def test_well_known_default_secret_key_is_not_used(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path, TESTING="1", SECRET_KEY="change-me")
+            self.assertNotEqual(app.secret_key, "change-me")
+
+    def test_explicit_secret_key_is_used(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path, TESTING="1", SECRET_KEY="a-real-secret-from-the-environment")
+            self.assertEqual(app.secret_key, "a-real-secret-from-the-environment")
+            self.assertFalse(Path(config_path, "secret_key").exists())
+
+    def test_forged_cookie_signed_with_old_default_is_rejected(self):
+        from flask.sessions import SecureCookieSessionInterface
+        from flask import Flask
+
+        forger = Flask("forger")
+        forger.secret_key = "change-me"
+        serializer = SecureCookieSessionInterface().get_signing_serializer(forger)
+        forged = serializer.dumps({"user": "admin", "role": "admin"})
+
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path, TESTING="1")
+            client = app.test_client()
+            client.set_cookie("session", forged)
+            response = client.get("/admin")
+            self.assertEqual(response.status_code, 302)
+            self.assertTrue(response.location.endswith("/login"))
+
+    def test_session_cookie_is_secure_outside_testing(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            with self.assertLogs("app", level="WARNING"):
+                app = self.make_app(config_path)
+            self.assertTrue(app.config["SESSION_COOKIE_SECURE"])
+            self.assertEqual(app.config["SESSION_COOKIE_SAMESITE"], "Lax")
+
+    def test_session_cookie_secure_is_relaxed_for_testing_and_debug(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            self.assertFalse(self.make_app(config_path, TESTING="1").config["SESSION_COOKIE_SECURE"])
+            self.assertFalse(self.make_app(config_path, FLASK_DEBUG="1").config["SESSION_COOKIE_SECURE"])
+            self.assertFalse(self.make_app(config_path, SESSION_COOKIE_SECURE="0").config["SESSION_COOKIE_SECURE"])
 
 
 if __name__ == "__main__":

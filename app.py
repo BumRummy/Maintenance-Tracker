@@ -1,6 +1,10 @@
 import csv
+import hmac
 import json
+import logging
 import os
+import secrets
+import tempfile
 import uuid
 from io import StringIO
 from base64 import urlsafe_b64encode
@@ -16,6 +20,7 @@ from flask import Flask, Response, flash, jsonify, redirect, render_template, re
 from cryptography.hazmat.primitives import serialization
 from py_vapid import Vapid
 from pywebpush import WebPushException, webpush
+from werkzeug.security import check_password_hash, generate_password_hash
 
 DEFAULT_LOCATION = "HCK"
 ISSUE_CATEGORIES = ("guest", "maintenance")
@@ -23,22 +28,66 @@ DEFAULT_CATEGORY = "maintenance"  # category assumed for issues saved before cat
 DEFAULT_NEW_ISSUE_CATEGORY = "guest"  # tab and form choice everyone starts on
 MAX_ISSUES_PER_SUBMIT = 20
 
+# Accounts created on a brand-new deployment. They carry no password here: the
+# store generates a random one for each when it first writes settings.json,
+# logs it once, and forces a change at first sign-in.
+DEFAULT_USERS = (
+    ("admin", "admin"),
+    ("maintenance", "maintenance"),
+    ("frontdesk", "front_desk"),
+    ("supervisor", "supervisor"),
+)
+
 DEFAULT_SETTINGS = {
     "locations": [DEFAULT_LOCATION],
     "users": [
-        {"username": "admin", "password": "admin123", "role": "admin", "email": "", "location": DEFAULT_LOCATION, "force_password_change": False},
-        {
-            "username": "maintenance",
-            "password": "changeme",
-            "role": "maintenance",
-            "email": "",
-            "location": DEFAULT_LOCATION,
-            "force_password_change": False,
-        },
-        {"username": "frontdesk", "password": "changeme", "role": "front_desk", "email": "", "location": DEFAULT_LOCATION, "force_password_change": False},
-        {"username": "supervisor", "password": "changeme", "role": "supervisor", "email": "", "location": DEFAULT_LOCATION, "force_password_change": False},
-    ]
+        {"username": username, "password": None, "role": role, "email": "", "location": DEFAULT_LOCATION, "force_password_change": True}
+        for username, role in DEFAULT_USERS
+    ],
 }
+
+INSECURE_SECRET_KEYS = {"", "change-me"}
+
+# Prefixes produced by werkzeug.security.generate_password_hash.
+_PASSWORD_HASH_PREFIXES = ("scrypt:", "pbkdf2:")
+
+
+def hash_password(password: str) -> str:
+    return generate_password_hash(password)
+
+
+def is_password_hash(value) -> bool:
+    return isinstance(value, str) and value.startswith(_PASSWORD_HASH_PREFIXES)
+
+
+def verify_password(stored, candidate: str) -> tuple[bool, bool]:
+    """Check ``candidate`` against a stored password.
+
+    Returns ``(matches, needs_rehash)``. ``needs_rehash`` is True when the stored
+    value is a legacy plaintext password that matched and should be re-saved
+    as a hash.
+    """
+    if not isinstance(stored, str) or not stored or not candidate:
+        return False, False
+    if is_password_hash(stored):
+        try:
+            return check_password_hash(stored, candidate), False
+        except (ValueError, TypeError):
+            return False, False
+    matches = hmac.compare_digest(stored.encode("utf-8"), candidate.encode("utf-8"))
+    return matches, matches
+
+
+def hash_plaintext_passwords(settings: dict) -> bool:
+    """Replace any legacy plaintext passwords in ``settings`` with hashes."""
+    changed = False
+    for user in settings.get("users", []):
+        password = user.get("password")
+        if isinstance(password, str) and password and not is_password_hash(password):
+            user["password"] = hash_password(password)
+            changed = True
+    return changed
+
 
 _vapid_key_creation_lock = Lock()
 
@@ -50,17 +99,58 @@ class Store:
         self.issues_file = self.config_dir / "issues.json"
         self.push_subscriptions_file = self.config_dir / "push_subscriptions.json"
         self.vapid_private_key_file = self.config_dir / "vapid_private.pem"
+        self.secret_key_file = self.config_dir / "secret_key"
         self.config_dir.mkdir(parents=True, exist_ok=True)
 
     def _write(self, path: Path, data) -> None:
-        with path.open("w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2)
+        # Write to a temporary file and rename it into place so that another
+        # worker never reads a half-written file.
+        fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.replace(tmp_name, path)
+        except BaseException:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+            raise
+
+    def _seed_settings(self) -> None:
+        """Create settings.json with the default accounts if it does not exist.
+
+        Each default account gets a random password, stored hashed and logged
+        once, and must change it at first sign-in. Creation is exclusive so that
+        concurrent workers never log passwords that were not the ones kept.
+        """
+        data = deepcopy(DEFAULT_SETTINGS)
+        initial_passwords = {}
+        for user in data["users"]:
+            password = secrets.token_urlsafe(12)
+            initial_passwords[user["username"]] = password
+            user["password"] = hash_password(password)
+        fd, tmp_name = tempfile.mkstemp(dir=str(self.config_dir), prefix=".settings.json.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, indent=2)
+            os.link(tmp_name, self.settings_file)
+        except FileExistsError:
+            return
+        finally:
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+        logging.getLogger(__name__).warning(
+            "Created %s with default accounts. Initial passwords (shown once; each must be changed at first sign-in): %s",
+            self.settings_file,
+            ", ".join(f"{name}={password}" for name, password in initial_passwords.items()),
+        )
 
     def load_settings(self) -> dict:
         if not self.settings_file.exists():
-            data = deepcopy(DEFAULT_SETTINGS)
-            self._write(self.settings_file, data)
-            return data
+            self._seed_settings()
         try:
             with self.settings_file.open("r", encoding="utf-8") as f:
                 return json.load(f)
@@ -113,6 +203,29 @@ class Store:
             serialization.PublicFormat.UncompressedPoint,
         )
         return vapid, urlsafe_b64encode(public_key).rstrip(b"=").decode("ascii")
+
+    def load_or_create_secret_key(self) -> str:
+        """Return a persistent random Flask secret key stored under the config dir."""
+        if not self.secret_key_file.exists():
+            fd, tmp_name = tempfile.mkstemp(dir=str(self.config_dir), prefix=".secret_key.", suffix=".tmp")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write(secrets.token_hex(32))
+                os.chmod(tmp_name, 0o600)
+                # link() fails if the file already exists, so concurrent workers
+                # agree on whichever key was written first.
+                os.link(tmp_name, self.secret_key_file)
+            except FileExistsError:
+                pass
+            finally:
+                try:
+                    os.unlink(tmp_name)
+                except OSError:
+                    pass
+        key = self.secret_key_file.read_text(encoding="utf-8").strip()
+        if len(key) < 32:
+            raise RuntimeError(f"{self.secret_key_file} does not contain a usable secret key.")
+        return key
 
     def add_issue(
         self,
@@ -208,12 +321,41 @@ class Store:
         return False
 
 
+def _env_flag(name: str) -> bool:
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def create_app() -> Flask:
     app = Flask(__name__)
-    app.secret_key = os.getenv("SECRET_KEY", "change-me")
+    testing = _env_flag("TESTING")
+    app.config["TESTING"] = testing
 
     store = Store(os.getenv("CONFIG_PATH", "/data"))
     app.config["STORE"] = store
+
+    secret_key = os.getenv("SECRET_KEY", "").strip()
+    if secret_key in INSECURE_SECRET_KEYS:
+        # Never fall back to a well-known key: anyone could forge sessions.
+        # Use a random key persisted under CONFIG_PATH so sessions survive
+        # restarts and are shared by every gunicorn worker.
+        secret_key = store.load_or_create_secret_key()
+        if not testing:
+            app.logger.warning(
+                "SECRET_KEY is not set; using the generated key in %s. Set SECRET_KEY to manage it yourself.",
+                store.secret_key_file,
+            )
+    app.secret_key = secret_key
+
+    if not (app.debug or testing) and os.getenv("SESSION_COOKIE_SECURE", "").strip().lower() not in ("0", "false", "no", "off"):
+        app.config.update(SESSION_COOKIE_SECURE=True, SESSION_COOKIE_SAMESITE="Lax")
+    else:
+        app.config.update(SESSION_COOKIE_SAMESITE="Lax")
+
+    # Seed a new deployment's accounts, or hash any passwords still stored in
+    # plaintext by older versions.
+    settings = store.load_settings()
+    if hash_plaintext_passwords(settings):
+        store.save_settings(settings)
     app.config["RESEND_API_KEY"] = os.getenv("RESEND_API_KEY", "")
     app.config["RESEND_FROM"] = os.getenv("RESEND_FROM", "noreply@bmiMaintenance.com")
     vapid_public_key = os.getenv("VAPID_PUBLIC_KEY", "").strip()
@@ -416,11 +558,13 @@ def create_app() -> Flask:
             username = request.form.get("username", "").strip().lower()
             password = request.form.get("password", "").strip()
             settings = store.load_settings()
-            user = next(
-                (u for u in settings["users"] if u["username"].lower() == username and u["password"] == password),
-                None,
-            )
-            if user:
+            user = next((u for u in settings["users"] if u["username"].lower() == username), None)
+            matches, needs_rehash = verify_password(user.get("password") if user else None, password)
+            if user and matches:
+                if needs_rehash:
+                    user["password"] = hash_password(password)
+                    store.save_settings(settings)
+                session.clear()
                 session["user"] = user["username"]
                 session["role"] = user["role"]
                 if user.get("force_password_change"):
@@ -448,7 +592,7 @@ def create_app() -> Flask:
             elif new_password != confirm_password:
                 flash("Passwords do not match.", "error")
             else:
-                user["password"] = new_password
+                user["password"] = hash_password(new_password)
                 user["force_password_change"] = False
                 store.save_settings(settings)
                 flash("Password updated successfully.", "success")
@@ -513,7 +657,7 @@ def create_app() -> Flask:
             elif new_password != confirm_password:
                 flash("Passwords do not match.", "error")
             else:
-                user["password"] = new_password
+                user["password"] = hash_password(new_password)
                 user["force_password_change"] = False
                 user["reset_token"] = None
                 user["reset_expires_at"] = None
@@ -843,7 +987,7 @@ def create_app() -> Flask:
                         {
                             "username": username,
                             "email": email,
-                            "password": password,
+                            "password": hash_password(password),
                             "role": role,
                             "location": location,
                             "force_password_change": True,
@@ -917,7 +1061,7 @@ def create_app() -> Flask:
                 else:
                     for u in settings["users"]:
                         if u["username"] == username:
-                            u["password"] = new_password
+                            u["password"] = hash_password(new_password)
                             break
                     store.save_settings(settings)
                     flash(f"Password updated for '{username}'.", "success")
@@ -964,7 +1108,7 @@ def create_app() -> Flask:
                         {
                             "username": username,
                             "email": email,
-                            "password": password,
+                            "password": hash_password(password),
                             "role": role,
                             "location": location,
                             "force_password_change": True,
@@ -981,7 +1125,7 @@ def create_app() -> Flask:
                 elif not new_password:
                     flash("New password required.", "error")
                 else:
-                    managed_user["password"] = new_password
+                    managed_user["password"] = hash_password(new_password)
                     managed_user["force_password_change"] = True
                     store.save_settings(settings)
                     flash(f"Password reset for '{managed_user['username']}'.", "success")
