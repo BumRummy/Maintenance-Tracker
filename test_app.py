@@ -7,7 +7,7 @@ from unittest.mock import patch
 
 from werkzeug.security import check_password_hash
 
-from app import Store, create_app, is_password_hash
+from app import Store, create_app, hash_password, is_password_hash
 
 
 class MaintenanceIssueTests(unittest.TestCase):
@@ -505,6 +505,235 @@ class MaintenanceIssueTests(unittest.TestCase):
                 self.assertEqual(report.status_code, 200)
                 self.assertIn(expected_issue, report.data)
                 self.assertNotIn(excluded_issue, report.data)
+
+    def use_known_passwords(self, app):
+        """Fresh deployments seed random passwords; give every account "changeme" for API tests."""
+        store = app.config["STORE"]
+        settings = store.load_settings()
+        for user in settings["users"]:
+            user["password"] = hash_password("changeme")
+            user["force_password_change"] = False
+        store.save_settings(settings)
+
+    def test_api_login_issue_lifecycle_and_location_scoping(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+
+            self.assertEqual(client.get("/api/v1/issues").status_code, 401)
+            bad = client.post("/api/v1/login", json={"username": "maintenance", "password": "nope"})
+            self.assertEqual(bad.status_code, 401)
+
+            login = client.post("/api/v1/login", json={"username": "Maintenance", "password": "changeme"})
+            self.assertEqual(login.status_code, 200)
+            self.assertEqual(login.get_json()["role"], "maintenance")
+            self.assertEqual(login.get_json()["location"], "HCK")
+
+            created = client.post("/api/v1/issues", json={
+                "room": "214",
+                "issues": [
+                    {"description": "Sink drains slowly", "category": "maintenance"},
+                    {"description": "Lamp out", "category": "guest", "checkout_date": "2026-11-20"},
+                ],
+            })
+            self.assertEqual(created.status_code, 201)
+            first, second = created.get_json()["issues"]
+            self.assertEqual(second["checkout_date"], "2026-11-20")
+
+            app.config["STORE"].add_issue("999", "Other hotel", "someone", "HCK2")
+            listing = client.get("/api/v1/issues").get_json()
+            self.assertEqual([i["room"] for i in listing["open"]], ["214", "214"])
+
+            moved = client.post(f"/api/v1/issues/{second['id']}/move", json={"category": "maintenance"})
+            self.assertEqual(moved.get_json()["category"], "maintenance")
+            self.assertIsNone(moved.get_json()["checkout_date"])
+
+            edited = client.patch(f"/api/v1/issues/{first['id']}", json={
+                "room": "215", "description": "Sink clogged", "category": "maintenance",
+            })
+            self.assertEqual(edited.get_json()["room"], "215")
+            self.assertEqual(edited.get_json()["edited_by"], "maintenance")
+
+            missing = client.post(f"/api/v1/issues/{first['id']}/close", json={"resolution": " "})
+            self.assertEqual(missing.status_code, 400)
+            closed = client.post(f"/api/v1/issues/{first['id']}/close", json={"resolution": "Snaked drain"})
+            self.assertEqual(closed.get_json()["status"], "closed")
+            self.assertEqual(closed.get_json()["closed_by"], "maintenance")
+
+            room = client.get("/api/v1/rooms/215").get_json()
+            self.assertEqual(room["open"], [])
+            self.assertEqual(room["history"][0]["resolution"], "Snaked drain")
+            listing = client.get("/api/v1/issues").get_json()
+            self.assertEqual(len(listing["open"]), 1)
+            self.assertEqual(len(listing["recently_closed"]), 1)
+
+            client.post("/api/v1/logout")
+            self.assertEqual(client.get("/api/v1/me").status_code, 401)
+
+    def test_api_front_desk_cannot_close_issues(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+            issue = app.config["STORE"].add_issue("101", "Leak", "frontdesk", "HCK")
+            client.post("/api/v1/login", json={"username": "frontdesk", "password": "changeme"})
+
+            response = client.post(f"/api/v1/issues/{issue['id']}/close", json={"resolution": "Done"})
+
+            self.assertEqual(response.status_code, 403)
+
+    def test_api_password_change_clears_forced_change(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            store = app.config["STORE"]
+            settings = store.load_settings()
+            settings["users"][1]["force_password_change"] = True
+            store.save_settings(settings)
+            client = app.test_client()
+
+            login = client.post("/api/v1/login", json={"username": "maintenance", "password": "changeme"})
+            self.assertTrue(login.get_json()["must_change_password"])
+            self.assertEqual(client.post("/api/v1/password", json={"new_password": "short"}).status_code, 400)
+            changed = client.post("/api/v1/password", json={"new_password": "longenough1"})
+
+            self.assertFalse(changed.get_json()["must_change_password"])
+
+    def login(self, client, username):
+        response = client.post("/api/v1/login", json={"username": username, "password": "changeme"})
+        self.assertEqual(response.status_code, 200)
+
+    def test_api_work_events_drive_state_and_metrics(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+            issue = app.config["STORE"].add_issue("214", "PTAC filter", "frontdesk", "HCK", "maintenance")
+            self.login(client, "maintenance")
+            url = f"/api/v1/issues/{issue['id']}/events"
+
+            self.assertEqual(client.post(url, json={"type": "stop"}).status_code, 400)
+            self.assertEqual(client.post(url, json={"type": "start"}).get_json()["work_state"], "active")
+            self.assertEqual(client.post(url, json={"type": "awaiting_parts"}).get_json()["work_state"], "awaiting_parts")
+            self.assertEqual(client.post(url, json={"type": "start"}).status_code, 400)
+            self.assertEqual(client.post(url, json={"type": "parts_received"}).get_json()["work_state"], "paused")
+            client.post(url, json={"type": "start"})
+            closed = client.post(f"/api/v1/issues/{issue['id']}/close", json={"resolution": "Done"}).get_json()
+
+            self.assertEqual([e["type"] for e in closed["events"]],
+                             ["start", "awaiting_parts", "parts_received", "start", "finish"])
+            for key in ("response_minutes", "labor_minutes", "parts_wait_minutes", "resolution_minutes"):
+                self.assertIsNotNone(closed["metrics"][key])
+
+    def test_work_metrics_use_event_times(self):
+        from api import work_metrics
+
+        issue = {
+            "created_at": "2026-11-11T10:00:00+00:00",
+            "closed_at": "2026-11-11T14:45:00+00:00",
+            "events": [
+                {"type": "start", "at": "2026-11-11T10:06:00+00:00"},
+                {"type": "stop", "at": "2026-11-11T10:31:00+00:00"},
+                {"type": "awaiting_parts", "at": "2026-11-11T10:36:00+00:00"},
+                {"type": "parts_received", "at": "2026-11-11T14:12:00+00:00"},
+                {"type": "start", "at": "2026-11-11T14:18:00+00:00"},
+                {"type": "finish", "at": "2026-11-11T14:45:00+00:00"},
+            ],
+        }
+
+        self.assertEqual(work_metrics(issue), {
+            "response_minutes": 6.0,
+            "labor_minutes": 52.0,
+            "parts_wait_minutes": 216.0,
+            "resolution_minutes": 285.0,
+        })
+
+    def test_web_close_records_finish_event(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            store = app.config["STORE"]
+            issue = store.add_issue("101", "Leak", "frontdesk", "HCK")
+
+            store.close_issue(issue["id"], "maintenance", "Fixed", "HCK")
+
+            self.assertEqual(store.load_issues()[0]["events"][0]["type"], "finish")
+
+    def test_api_parts_deduct_and_return_inventory(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+            issue = app.config["STORE"].add_issue("318", "Toilet runs", "frontdesk", "HCK", "maintenance")
+            self.login(client, "maintenance")
+
+            item = client.post("/api/v1/inventory", json={
+                "name": "Flapper", "barcode": "0123456789", "qty": 3, "min_qty": 2, "unit_cost": 4.5,
+            }).get_json()
+            duplicate = client.post("/api/v1/inventory", json={"name": "Other", "barcode": "0123456789"})
+            self.assertEqual(duplicate.status_code, 400)
+            self.assertEqual(client.get("/api/v1/inventory/barcode/0123456789").get_json()["id"], item["id"])
+            self.assertEqual(client.get("/api/v1/inventory/barcode/nope").status_code, 404)
+
+            parts_url = f"/api/v1/issues/{issue['id']}/parts"
+            too_many = client.post(parts_url, json={"item_id": item["id"], "qty": 5})
+            self.assertEqual(too_many.status_code, 400)
+            used = client.post(parts_url, json={"item_id": item["id"], "qty": 2}).get_json()
+            self.assertEqual(used["parts_cost"], 9.0)
+            self.assertEqual(client.get("/api/v1/inventory").get_json()["items"][0]["qty"], 1)
+
+            returned = client.delete(f"{parts_url}/{used['parts'][0]['id']}").get_json()
+            self.assertEqual(returned["parts"], [])
+            self.assertEqual(client.get("/api/v1/inventory").get_json()["items"][0]["qty"], 3)
+
+            received = client.patch(f"/api/v1/inventory/{item['id']}", json={"delta": 10}).get_json()
+            self.assertEqual(received["qty"], 13)
+            self.assertEqual(client.patch(f"/api/v1/inventory/{item['id']}", json={"delta": -20}).status_code, 400)
+
+    def test_api_inventory_is_scoped_to_location_and_role(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+            self.login(client, "maintenance")
+            client.post("/api/v1/inventory", json={"name": "Filter"})
+            client.post("/api/v1/logout")
+
+            self.login(client, "frontdesk")
+            self.assertEqual(client.get("/api/v1/inventory").status_code, 403)
+            client.post("/api/v1/logout")
+
+            store = app.config["STORE"]
+            settings = store.load_settings()
+            settings["users"][3]["location"] = "HCK2"
+            store.save_settings(settings)
+            self.login(client, "supervisor")
+            self.assertEqual(client.get("/api/v1/inventory").get_json()["items"], [])
+
+    def test_api_response_time_report_for_supervisors_only(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+            store = app.config["STORE"]
+            done = store.add_issue("214", "Filter", "frontdesk", "HCK", "maintenance")
+            store.add_issue("305", "Remote", "frontdesk", "HCK", "guest")
+            self.login(client, "maintenance")
+            client.post(f"/api/v1/issues/{done['id']}/events", json={"type": "start"})
+            client.post(f"/api/v1/issues/{done['id']}/close", json={"resolution": "Swapped"})
+            self.assertEqual(client.get("/api/v1/reports/response-times").status_code, 403)
+            client.post("/api/v1/logout")
+
+            self.login(client, "supervisor")
+            report = client.get("/api/v1/reports/response-times?days=7").get_json()
+
+            self.assertEqual(report["days"], 7)
+            self.assertEqual(report["overall"]["count"], 1)
+            self.assertEqual(report["by_category"]["maintenance"]["count"], 1)
+            self.assertEqual(report["by_technician"][0]["name"], "maintenance")
+            self.assertEqual(report["open"]["count"], 1)
+            self.assertEqual(report["open"]["not_started"], 1)
 
 
 class PasswordSecurityTests(unittest.TestCase):

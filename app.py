@@ -12,6 +12,7 @@ from copy import deepcopy
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
 from threading import Lock
+from types import SimpleNamespace
 from urllib import error, request as urllib_request
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -21,6 +22,8 @@ from cryptography.hazmat.primitives import serialization
 from py_vapid import Vapid
 from pywebpush import WebPushException, webpush
 from werkzeug.security import check_password_hash, generate_password_hash
+
+from api import register_api
 
 DEFAULT_LOCATION = "HCK"
 ISSUE_CATEGORIES = ("guest", "maintenance")
@@ -315,6 +318,8 @@ class Store:
                 issue["status"] = "closed"
                 issue["closed_at"] = datetime.now(timezone.utc).isoformat()
                 issue["closed_by"] = closed_by
+                # Ends any running labor or parts wait for response-time reporting.
+                issue.setdefault("events", []).append({"type": "finish", "at": issue["closed_at"], "by": closed_by})
                 issue["resolution"] = resolution.strip()
                 self.save_issues(issues)
                 return True
@@ -957,6 +962,20 @@ def create_app() -> Flask:
         if wants_json:
             return jsonify({"ok": True})
         return redirect(url_for("dashboard"))
+
+    register_api(app, store, SimpleNamespace(
+        current_user=_current_user,
+        location_for_current_user=_location_for_current_user,
+        issues_for_location=_issues_for_location,
+        issue_category=_issue_category,
+        normalize_users=_normalize_users,
+        send_new_issue_notifications=_send_new_issue_notifications,
+        verify_password=verify_password,
+        hash_password=hash_password,
+        ISSUE_CATEGORIES=ISSUE_CATEGORIES,
+        DEFAULT_NEW_ISSUE_CATEGORY=DEFAULT_NEW_ISSUE_CATEGORY,
+        MAX_ISSUES_PER_SUBMIT=MAX_ISSUES_PER_SUBMIT,
+    ))
 
     @app.route("/admin", methods=["GET", "POST"])
     def admin():
