@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block content %}
+<article class="card legal">
+  <h1>HotelCraft Privacy Policy</h1>
+  <p class="card-copy">Effective November 11, 2026. Applies to the HotelCraft iPhone app and the BMI Maintenance website (bmimaintenance.com).</p>
+
+  <h2>Who uses HotelCraft</h2>
+  <p>HotelCraft is a work-order tool for hotel staff. Accounts are created by a hotel's administrator or supervisor; there is no public sign-up.</p>
+
+  <h2>What we store</h2>
+  <ul>
+    <li><strong>Account details:</strong> username, role, assigned hotel location, and an optional email address used only for password resets. Passwords are stored as one-way hashes, never in readable form.</li>
+    <li><strong>Work records:</strong> maintenance requests (room number, description, category, checkout date), who created, started, stopped, or completed each job and when, resolution notes, and parts used.</li>
+    <li><strong>Inventory:</strong> part names, barcodes, bin locations, quantities, and costs for each hotel location.</li>
+    <li><strong>Notifications:</strong> if you turn on browser notifications on the website, the push subscription for that browser.</li>
+    <li><strong>Sign-in session:</strong> a cookie that keeps you signed in. It is not used for advertising or tracking.</li>
+  </ul>
+
+  <h2>What stays on your phone</h2>
+  <p>The app uses the camera to scan part barcodes and to read room numbers from a vacant-rooms list. Images are processed on the device by Apple's built-in text and barcode recognition and are <strong>never uploaded</strong>. The list of vacant rooms is kept only on that phone and is cleared at midnight. Photos you pick from your library are used the same way and are not uploaded.</p>
+
+  <h2>How information is used</h2>
+  <p>Only to run the service: showing and assigning work, tracking parts and stock, sending new-job notifications, password resets, and response-time reports for supervisors at the same hotel. Each hotel location only sees its own data.</p>
+  <p>We do not sell personal information, show ads, or track you across other apps or websites. HotelCraft contains no third-party analytics or advertising code.</p>
+
+  <h2>Service providers</h2>
+  <p>The service is hosted on Railway (cloud hosting). Password-reset emails are sent through Resend. These providers process data only to provide those functions.</p>
+
+  <h2>Guest information</h2>
+  <p>HotelCraft is not designed to store guest names, contact details, or payment information. Staff should describe the issue and the room only.</p>
+
+  <h2>Retention and deletion</h2>
+  <p>Work records are kept so hotels can see room history and reports. A hotel administrator can delete user accounts. To request deletion or a copy of information about you, contact your hotel's administrator{% if support_email %} or email <a href="mailto:{{ support_email }}">{{ support_email }}</a>{% endif %}.</p>
+
+  <h2>Children</h2>
+  <p>HotelCraft is a workplace tool and is not intended for children.</p>
+
+  <h2>Changes</h2>
+  <p>If this policy changes, the updated version will be posted on this page with a new effective date.</p>
+
+  <p><a href="{{ url_for('support') }}">Support</a></p>
+</article>
+{% endblock %}

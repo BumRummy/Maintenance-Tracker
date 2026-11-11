@@ -1,0 +1,30 @@
+{% extends "base.html" %}
+{% block content %}
+<article class="card legal">
+  <h1>HotelCraft Support</h1>
+  <p class="card-copy">Help for the HotelCraft iPhone app and the BMI Maintenance website.</p>
+
+  <h2>Getting an account</h2>
+  <p>Accounts are created by your hotel's maintenance manager, supervisor, or administrator. Sign in to the app with the same username and password you use on bmimaintenance.com.</p>
+
+  <h2>Forgot your password?</h2>
+  <p>Use <a href="{{ url_for('forgot_password') }}">Forgot password</a> if your account has an email address, or ask your supervisor to reset it.</p>
+
+  <h2>Common questions</h2>
+  <ul>
+    <li><strong>I can't see a request.</strong> Each account only sees its own hotel location. Pull down on the list to refresh.</li>
+    <li><strong>Where did a job go?</strong> Jobs awaiting parts move to the On Hold tab; completed jobs are under Done for two weeks and always in room history.</li>
+    <li><strong>The scanner won't start.</strong> Allow camera access in Settings &rsaquo; HotelCraft &rsaquo; Camera.</li>
+    <li><strong>A part won't add to a job.</strong> Check its count in Inventory; receive stock first if it shows zero.</li>
+  </ul>
+
+  <h2>Contact</h2>
+  {% if support_email %}
+  <p>Email <a href="mailto:{{ support_email }}">{{ support_email }}</a>. Include your hotel location and username, and a screenshot if something looks wrong.</p>
+  {% else %}
+  <p>Contact your hotel's maintenance manager or administrator.</p>
+  {% endif %}
+
+  <p><a href="{{ url_for('privacy') }}">Privacy Policy</a></p>
+</article>
+{% endblock %}

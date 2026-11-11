@@ -506,6 +506,19 @@ class MaintenanceIssueTests(unittest.TestCase):
                 self.assertIn(expected_issue, report.data)
                 self.assertNotIn(excluded_issue, report.data)
 
+    def test_privacy_and_support_pages_are_public(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            with patch.dict(os.environ, {"SUPPORT_EMAIL": "help@example.com"}):
+                privacy = client.get("/privacy")
+                support = client.get("/support")
+
+            self.assertEqual(privacy.status_code, 200)
+            self.assertIn(b"never uploaded", privacy.data)
+            self.assertEqual(support.status_code, 200)
+            self.assertIn(b"help@example.com", support.data)
+
     def use_known_passwords(self, app):
         """Fresh deployments seed random passwords; give every account "changeme" for API tests."""
         store = app.config["STORE"]
