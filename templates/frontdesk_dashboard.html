@@ -29,7 +29,7 @@
 </div>
 
 <div class="issue-columns">
-  {% for cat, label in (('guest', 'Guest Issues'), ('maintenance', 'Maintenance Issues')) %}
+  {% for cat, label in (('guest', 'Guest Issues'), ('maintenance', 'Preventative Maintenance')) %}
   <section data-category="{{ cat }}" class="issue-column {{ 'active' if tab == cat }}">
     <h2 class="column-title">{{ label }} <span class="count-badge" data-count>{{ tab_counts[cat] }}</span></h2>
     <div class="tile-grid" data-open-grid>
@@ -45,7 +45,7 @@
         <button type="button" class="edit-btn">Edit</button>
         {% if session.role in ('supervisor', 'admin', 'maintenance') %}
         <button type="button" class="move-btn" data-move-to="{{ 'maintenance' if cat == 'guest' else 'guest' }}">
-          Move to {{ 'Maintenance' if cat == 'guest' else 'Guest' }} Issues
+          Move to {{ 'Preventative Maintenance' if cat == 'guest' else 'Guest Issues' }}
         </button>
         {% endif %}
       </div>
@@ -59,7 +59,7 @@
     {% if closed_by_category[cat] %}
     <div class="tile-grid">
       {% for issue in closed_by_category[cat] %}
-      <div class="tile resolved">
+      <div class="tile resolved" data-room="{{ issue.room }}">
         <div class="tile-room">Room {{ issue.room }}</div>
         <div class="tile-desc">{{ issue.description }}</div>
         <div class="tile-resolution"><strong>Resolution:</strong> {{ issue.resolution or '—' }}</div>
@@ -83,6 +83,7 @@
   modal.addEventListener('click', e => { if (e.target === modal) modal.classList.remove('open'); });
   document.addEventListener('keydown', e => { if (e.key === 'Escape') modal.classList.remove('open'); });
 </script>
+{% include '_room_modal.html' %}
 {% include '_issue_edit_modal.html' %}
 {% include '_issue_move_script.html' %}
 {% include '_issue_form_script.html' %}

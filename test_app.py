@@ -271,7 +271,50 @@ class MaintenanceIssueTests(unittest.TestCase):
             with client.session_transaction() as session:
                 session["user"] = "supervisor"
                 session["role"] = "supervisor"
-            self.assertIn(b'value="maintenance" checked', client.get("/dashboard").data)
+            self.assertIn(b'value="guest" checked', client.get("/dashboard").data)
+
+    def test_room_issues_lists_open_and_history_for_the_users_location(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            store = app.config["STORE"]
+            store.add_issue("101", "Leaky sink", "frontdesk", "HCK", "maintenance")
+            store.add_issue("101", "Extra towels", "frontdesk", "HCK", "guest", "2026-12-01")
+            old = store.add_issue("101", "Broken lamp", "frontdesk", "HCK")
+            store.close_issue(old["id"], "maintenance", "Replaced bulb")
+            store.add_issue("102", "Other room", "frontdesk", "HCK")
+            store.add_issue("101", "Other hotel", "frontdesk", "HCK2")
+
+            self.assertEqual(client.get("/api/room-issues?room=101").status_code, 403)
+            with client.session_transaction() as session:
+                session["user"] = "frontdesk"
+                session["role"] = "front_desk"
+            data = client.get("/api/room-issues?room=101").get_json()
+            self.assertEqual(sorted(i["description"] for i in data["open"]), ["Extra towels", "Leaky sink"])
+            self.assertEqual([i["resolution"] for i in data["history"]], ["Replaced bulb"])
+            self.assertEqual(client.get("/api/room-issues?room=").status_code, 400)
+            self.assertIn(b'data-room="101"', client.get("/dashboard").data)
+
+    def test_completing_an_issue_via_fetch_returns_json_and_plain_post_redirects(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            store = app.config["STORE"]
+            first = store.add_issue("101", "One", "frontdesk", "HCK")
+            second = store.add_issue("102", "Two", "frontdesk", "HCK")
+            with client.session_transaction() as session:
+                session["user"] = "maintenance"
+                session["role"] = "maintenance"
+
+            blank = client.post(f"/issues/{first['id']}/close", data={"resolution": " "}, headers={"X-Requested-With": "fetch"})
+            self.assertEqual(blank.status_code, 400)
+            done = client.post(f"/issues/{first['id']}/close", data={"resolution": "Fixed"}, headers={"X-Requested-With": "fetch"})
+            self.assertEqual(done.get_json(), {"ok": True})
+            again = client.post(f"/issues/{first['id']}/close", data={"resolution": "Fixed"}, headers={"X-Requested-With": "fetch"})
+            self.assertEqual(again.status_code, 404)
+            plain = client.post(f"/issues/{second['id']}/close", data={"resolution": "Fixed"})
+            self.assertEqual(plain.status_code, 302)
+            self.assertTrue(all(i["status"] == "closed" for i in store.load_issues()))
 
     def test_maintenance_user_can_save_push_subscription(self):
         with tempfile.TemporaryDirectory() as config_path:

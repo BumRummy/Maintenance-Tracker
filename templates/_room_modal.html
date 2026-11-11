@@ -1,0 +1,86 @@
+<div id="room-modal" class="modal-overlay" role="dialog" aria-modal="true" aria-labelledby="room-modal-title">
+  <div class="modal room-modal">
+    <div class="room-modal-header">
+      <h2 id="room-modal-title">Room</h2>
+      <button type="button" id="room-modal-close" aria-label="Close">&times;</button>
+    </div>
+    <div id="room-modal-body"></div>
+  </div>
+</div>
+<script>
+  (function () {
+    const modal = document.getElementById('room-modal');
+    const title = document.getElementById('room-modal-title');
+    const body = document.getElementById('room-modal-body');
+    const labels = {guest: 'Guest', maintenance: 'Preventative Maintenance'};
+
+    function el(tag, className, text) {
+      const node = document.createElement(tag);
+      if (className) node.className = className;
+      if (text !== undefined) node.textContent = text;
+      return node;
+    }
+    function section(heading, count, items, render, emptyText) {
+      const wrap = el('section', 'room-section');
+      const h = el('h3', 'section-title', heading + ' ');
+      h.appendChild(el('span', 'count-badge', count));
+      wrap.appendChild(h);
+      if (!items.length) wrap.appendChild(el('p', 'room-empty', emptyText));
+      items.forEach(item => wrap.appendChild(render(item)));
+      return wrap;
+    }
+    function badge(category) {
+      return el('span', 'category-badge ' + category, labels[category]);
+    }
+    function openRow(issue) {
+      const row = el('div', 'room-row');
+      const top = el('div', 'room-row-top');
+      top.appendChild(badge(issue.category));
+      top.appendChild(el('span', 'tile-meta', 'Reported ' + issue.created_at + ' by ' + issue.created_by));
+      row.appendChild(top);
+      row.appendChild(el('div', 'room-row-desc', issue.description));
+      if (issue.checkout_date) row.appendChild(el('div', 'tile-checkout', '\u{1F4C5} On checkout: ' + issue.checkout_date));
+      return row;
+    }
+    function historyRow(issue) {
+      const row = el('div', 'room-row resolved');
+      const top = el('div', 'room-row-top');
+      top.appendChild(badge(issue.category));
+      top.appendChild(el('span', 'tile-meta', 'Resolved ' + issue.closed_at + (issue.closed_by ? ' by ' + issue.closed_by : '')));
+      row.appendChild(top);
+      row.appendChild(el('div', 'room-row-desc', issue.description));
+      const res = el('div', 'tile-resolution');
+      res.appendChild(el('strong', '', 'Resolution: '));
+      res.appendChild(document.createTextNode(issue.resolution || '\u2014'));
+      row.appendChild(res);
+      return row;
+    }
+
+    async function openRoom(room) {
+      title.textContent = 'Room ' + room;
+      body.replaceChildren(el('p', 'room-empty', 'Loading\u2026'));
+      modal.classList.add('open');
+      try {
+        const res = await fetch('/api/room-issues?room=' + encodeURIComponent(room));
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Unable to load room.');
+        title.textContent = 'Room ' + data.room;
+        body.replaceChildren(
+          section('Open Issues', data.open.length, data.open, openRow, 'No open issues for this room.'),
+          section('Maintenance History', data.history.length, data.history, historyRow, 'No maintenance history for this room.')
+        );
+      } catch (err) {
+        body.replaceChildren(el('p', 'form-error', err.message));
+      }
+    }
+
+    document.addEventListener('click', e => {
+      if (e.target.closest('button, a, input, textarea, select, label, form')) return;
+      const tile = e.target.closest('.tile[data-room]');
+      if (tile) openRoom(tile.dataset.room);
+    });
+    document.getElementById('room-modal-close').addEventListener('click', () => modal.classList.remove('open'));
+    modal.addEventListener('click', e => { if (e.target === modal) modal.classList.remove('open'); });
+    document.addEventListener('keydown', e => { if (e.key === 'Escape') modal.classList.remove('open'); });
+  })();
+</script>

@@ -19,7 +19,8 @@ from pywebpush import WebPushException, webpush
 
 DEFAULT_LOCATION = "HCK"
 ISSUE_CATEGORIES = ("guest", "maintenance")
-DEFAULT_CATEGORY = "maintenance"
+DEFAULT_CATEGORY = "maintenance"  # category assumed for issues saved before categories existed
+DEFAULT_NEW_ISSUE_CATEGORY = "guest"  # tab and form choice everyone starts on
 MAX_ISSUES_PER_SUBMIT = 20
 
 DEFAULT_SETTINGS = {
@@ -576,7 +577,7 @@ def create_app() -> Flask:
             session.clear()
             return redirect(url_for("login"))
         issues = _issues_for_location(location)
-        default_tab = "guest" if role == "front_desk" else DEFAULT_CATEGORY
+        default_tab = DEFAULT_NEW_ISSUE_CATEGORY
         tab = request.args.get("tab", default_tab)
         if tab not in ISSUE_CATEGORIES:
             tab = default_tab
@@ -663,7 +664,7 @@ def create_app() -> Flask:
         if guard:
             return guard
         room = request.form.get("room", "").strip()
-        default_category = "guest" if session.get("role") == "front_desk" else DEFAULT_CATEGORY
+        default_category = DEFAULT_NEW_ISSUE_CATEGORY
         # Each row is one issue for the room; its fields carry the row id as a suffix.
         # A form without row ids is treated as a single issue using the plain field names.
         row_ids = request.form.getlist("row")[:MAX_ISSUES_PER_SUBMIT] or [""]
@@ -698,6 +699,44 @@ def create_app() -> Flask:
         else:
             flash(f"{len(entries)} issues submitted for room {room.upper()}.", "success")
         return redirect(url_for("dashboard", tab=entries[0][1]))
+
+    @app.get("/api/room-issues")
+    def room_issues():
+        """Open issues and resolved history for one room at the user's location."""
+        if session.get("role") not in ("front_desk", "supervisor", "maintenance", "admin"):
+            return jsonify({"error": "Access denied."}), 403
+        room = request.args.get("room", "").strip().upper()
+        if not room:
+            return jsonify({"error": "Room is required."}), 400
+        location = _location_for_current_user()
+        if not location:
+            session.clear()
+            return jsonify({"error": "Your account is no longer available."}), 403
+        room_items = [i for i in _issues_for_location(location) if str(i["room"]).upper() == room]
+
+        def summarize(issue: dict) -> dict:
+            return {
+                "category": _issue_category(issue),
+                "description": issue["description"],
+                "checkout_date": issue.get("checkout_date"),
+                "created_at": fmt_date(issue["created_at"]),
+                "created_by": issue["created_by"],
+                "closed_at": fmt_date(issue.get("closed_at")),
+                "closed_by": issue.get("closed_by"),
+                "resolution": issue.get("resolution"),
+            }
+
+        open_items = sorted((i for i in room_items if i["status"] == "open"), key=lambda x: x["created_at"])
+        closed_items = sorted(
+            (i for i in room_items if i["status"] == "closed"),
+            key=lambda x: x.get("closed_at") or "",
+            reverse=True,
+        )
+        return jsonify({
+            "room": room,
+            "open": [summarize(i) for i in open_items],
+            "history": [summarize(i) for i in closed_items],
+        })
 
     @app.post("/issues/<issue_id>/edit")
     def edit_issue(issue_id):
@@ -746,19 +785,33 @@ def create_app() -> Flask:
 
     @app.post("/issues/<issue_id>/close")
     def close_issue(issue_id):
+        # The dashboard submits this with fetch so the page keeps its scroll position;
+        # a plain form post still works and redirects back to the dashboard.
+        wants_json = request.headers.get("X-Requested-With") == "fetch"
+        if wants_json and session.get("role") not in ("maintenance", "admin"):
+            return jsonify({"error": "You cannot complete issues."}), 403
         guard = _require(roles=("maintenance", "admin"))
         if guard:
             return guard
         resolution = request.form.get("resolution", "").strip()
         if not resolution:
+            if wants_json:
+                return jsonify({"error": "Resolution is required before marking an issue complete."}), 400
             flash("Resolution is required before marking an issue complete.", "error")
             return redirect(url_for("dashboard"))
         location = _location_for_current_user()
         if not location:
             session.clear()
+            if wants_json:
+                return jsonify({"error": "Your account is no longer available."}), 403
             return redirect(url_for("login"))
         if not store.close_issue(issue_id, session["user"], resolution, location):
+            if wants_json:
+                return jsonify({"error": "Issue was not found at your assigned location."}), 404
             flash("Issue was not found at your assigned location.", "error")
+            return redirect(url_for("dashboard"))
+        if wants_json:
+            return jsonify({"ok": True})
         return redirect(url_for("dashboard"))
 
     @app.route("/admin", methods=["GET", "POST"])

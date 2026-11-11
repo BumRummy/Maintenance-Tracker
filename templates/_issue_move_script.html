@@ -1,7 +1,7 @@
 <script>
   (function () {
     const sortMode = {{ sort | tojson }};
-    const labels = {guest: 'Guest Issues', maintenance: 'Maintenance Issues'};
+    const labels = {guest: 'Guest Issues', maintenance: 'Preventative Maintenance'};
 
     function column(cat) { return document.querySelector('.issue-column[data-category="' + cat + '"]'); }
 
@@ -69,6 +69,30 @@
         alert(err.message);
       } finally {
         btn.disabled = false;
+      }
+    });
+
+
+    // --- Complete issue (Mark as Fixed) without reloading the page ---
+    document.addEventListener('submit', async e => {
+      const form = e.target.closest('.resolution-form');
+      if (!form) return;
+      e.preventDefault();
+      const tile = form.closest('.tile');
+      const submit = form.querySelector('[type=submit]');
+      submit.disabled = true;
+      try {
+        const res = await fetch(form.action, {
+          method: 'POST',
+          headers: {'X-Requested-With': 'fetch'},
+          body: new FormData(form),
+        });
+        if (!res.ok) throw new Error((await res.json()).error || 'Unable to complete issue.');
+        tile.remove();
+        updateCounts();
+      } catch (err) {
+        alert(err.message);
+        submit.disabled = false;
       }
     });
 
