@@ -271,7 +271,7 @@ class MaintenanceIssueTests(unittest.TestCase):
             with client.session_transaction() as session:
                 session["user"] = "supervisor"
                 session["role"] = "supervisor"
-            self.assertIn(b'value="maintenance" checked', client.get("/dashboard").data)
+            self.assertIn(b'value="guest" checked', client.get("/dashboard").data)
 
     def test_room_issues_lists_open_and_history_for_the_users_location(self):
         with tempfile.TemporaryDirectory() as config_path:

@@ -19,7 +19,8 @@ from pywebpush import WebPushException, webpush
 
 DEFAULT_LOCATION = "HCK"
 ISSUE_CATEGORIES = ("guest", "maintenance")
-DEFAULT_CATEGORY = "maintenance"
+DEFAULT_CATEGORY = "maintenance"  # category assumed for issues saved before categories existed
+DEFAULT_NEW_ISSUE_CATEGORY = "guest"  # tab and form choice everyone starts on
 MAX_ISSUES_PER_SUBMIT = 20
 
 DEFAULT_SETTINGS = {
@@ -576,7 +577,7 @@ def create_app() -> Flask:
             session.clear()
             return redirect(url_for("login"))
         issues = _issues_for_location(location)
-        default_tab = "guest" if role == "front_desk" else DEFAULT_CATEGORY
+        default_tab = DEFAULT_NEW_ISSUE_CATEGORY
         tab = request.args.get("tab", default_tab)
         if tab not in ISSUE_CATEGORIES:
             tab = default_tab
@@ -663,7 +664,7 @@ def create_app() -> Flask:
         if guard:
             return guard
         room = request.form.get("room", "").strip()
-        default_category = "guest" if session.get("role") == "front_desk" else DEFAULT_CATEGORY
+        default_category = DEFAULT_NEW_ISSUE_CATEGORY
         # Each row is one issue for the room; its fields carry the row id as a suffix.
         # A form without row ids is treated as a single issue using the plain field names.
         row_ids = request.form.getlist("row")[:MAX_ISSUES_PER_SUBMIT] or [""]
