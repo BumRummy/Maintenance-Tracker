@@ -24,7 +24,7 @@
 </div>
 
 <div class="issue-columns">
-  {% for cat, label in (('guest', 'Guest Issues'), ('maintenance', 'Maintenance Issues')) %}
+  {% for cat, label in (('guest', 'Guest Issues'), ('maintenance', 'Preventative Maintenance')) %}
   <section data-category="{{ cat }}" class="issue-column {{ 'active' if tab == cat }}">
     <h2 class="column-title">{{ label }} <span class="count-badge" data-count>{{ tab_counts[cat] }}</span></h2>
     <div class="tile-grid" data-open-grid>
@@ -39,7 +39,7 @@
         </div>
         <button type="button" class="edit-btn">Edit</button>
         <button type="button" class="move-btn" data-move-to="{{ 'maintenance' if cat == 'guest' else 'guest' }}">
-          Move to {{ 'Maintenance' if cat == 'guest' else 'Guest' }} Issues
+          Move to {{ 'Preventative Maintenance' if cat == 'guest' else 'Guest Issues' }}
         </button>
         <form method="post" action="{{ url_for('close_issue', issue_id=issue.id) }}" class="resolution-form">
           <label class="resolution-label">Resolution
