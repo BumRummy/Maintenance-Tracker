@@ -981,6 +981,7 @@ def create_app() -> Flask:
         send_new_issue_notifications=_send_new_issue_notifications,
         verify_password=verify_password,
         hash_password=hash_password,
+        DEFAULT_LOCATION=DEFAULT_LOCATION,
         ISSUE_CATEGORIES=ISSUE_CATEGORIES,
         DEFAULT_NEW_ISSUE_CATEGORY=DEFAULT_NEW_ISSUE_CATEGORY,
         MAX_ISSUES_PER_SUBMIT=MAX_ISSUES_PER_SUBMIT,

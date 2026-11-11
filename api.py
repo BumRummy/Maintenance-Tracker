@@ -118,7 +118,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     """Add /api/v1 routes. ``h`` carries helpers defined inside create_app:
     current_user, location_for_current_user, issues_for_location, issue_category,
     normalize_users, send_new_issue_notifications, verify_password, hash_password, and the constants
-    ISSUE_CATEGORIES, DEFAULT_NEW_ISSUE_CATEGORY, MAX_ISSUES_PER_SUBMIT."""
+    DEFAULT_LOCATION, ISSUE_CATEGORIES, DEFAULT_NEW_ISSUE_CATEGORY, MAX_ISSUES_PER_SUBMIT."""
     inventory = Inventory(store.config_dir)
 
     def error(message: str, status: int):
@@ -186,7 +186,12 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         ``change`` may return an error string to abort without saving."""
         issues = store.load_issues()
         issue = next(
-            (i for i in issues if i["id"] == issue_id and i["status"] == "open" and i.get("location") == location),
+            (
+                i for i in issues
+                if i["id"] == issue_id and i["status"] == "open"
+                # Issues saved before locations existed belong to the default location, as on the web pages.
+                and i.get("location", h.DEFAULT_LOCATION) == location
+            ),
             None,
         )
         if not issue:
