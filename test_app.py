@@ -519,6 +519,25 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertEqual(support.status_code, 200)
             self.assertIn(b"help@example.com", support.data)
 
+    def test_api_work_and_parts_on_issues_saved_before_locations_existed(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            store = app.config["STORE"]
+            issue = store.add_issue("101", "Leak", "frontdesk", "HCK", "maintenance")
+            issues = store.load_issues()
+            del issues[0]["location"]  # older records have no location; the site treats them as HCK
+            store.save_issues(issues)
+            client = app.test_client()
+            self.login(client, "maintenance")
+            item = client.post("/api/v1/inventory", json={"name": "Washer", "qty": 2}).get_json()
+
+            started = client.post(f"/api/v1/issues/{issue['id']}/events", json={"type": "start"})
+            part = client.post(f"/api/v1/issues/{issue['id']}/parts", json={"item_id": item["id"]})
+
+            self.assertEqual(started.status_code, 200)
+            self.assertEqual(part.status_code, 200)
+
     def use_known_passwords(self, app):
         """Fresh deployments seed random passwords; give every account "changeme" for API tests."""
         store = app.config["STORE"]
