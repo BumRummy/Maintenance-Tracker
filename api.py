@@ -24,7 +24,7 @@ import httpx
 from flask import Flask, jsonify, request, session
 
 from apns import DEAD_TOKEN_REASONS, APNsSender, Devices, new_issue_payload
-from pm import DEFAULT_PM_ITEMS, RATINGS, PMRecords, clean_items, quarter_bounds, quarter_of
+from pm import PMRecords, clean_items, items_from_storage, normalize_rating, quarter_bounds, quarter_of, record_ratings
 
 ALL_ROLES = ("front_desk", "supervisor", "maintenance", "admin")
 WORK_ROLES = ("maintenance", "admin")
@@ -899,7 +899,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             # A list, not an object keyed by room, so clients never rewrite the keys ("305B").
             "room_types": [{"room": room, "type": code} for room, code in (record.get("room_types") or {}).items()],
             "areas": record.get("areas") or [],
-            "pm_items": record.get("pm_items") or DEFAULT_PM_ITEMS,
+            "pm_items": items_from_storage(record.get("pm_items")),
             "updated_at": record.get("updated_at"),
             "updated_by": record.get("updated_by"),
         }
@@ -976,17 +976,18 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     def today() -> date:
         return datetime.now(h.TIMEZONE).date()
 
-    def pm_items_for(location: str) -> list[str]:
-        return (properties.load().get(location) or {}).get("pm_items") or DEFAULT_PM_ITEMS
+    def pm_items_for(location: str) -> list[dict]:
+        """[{name, options}] for the property's checklist."""
+        return items_from_storage((properties.load().get(location) or {}).get("pm_items"))
 
     def open_pm_issues(location: str) -> list[dict]:
         return [i for i in h.issues_for_location(location)
                 if i["status"] == "open" and h.issue_category(i) == "maintenance"]
 
-    def pm_status(record: dict | None, items: list[str]) -> str:
+    def pm_status(record: dict | None, items: list[dict]) -> str:
         if record and record.get("completed"):
             return "done"
-        if record and any(item in (record.get("ratings") or {}) for item in items):
+        if record and any(i["name"] in record_ratings(record) for i in items):
             return "in_progress"
         return "due"
 
@@ -1007,12 +1008,13 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             return None
         # A list rather than an object keyed by item name, so clients never rewrite the keys.
         return {
-            "ratings": [{"item": item, "rating": rating} for item, rating in (record.get("ratings") or {}).items()],
+            "ratings": [{"item": item, "rating": rating} for item, rating in record_ratings(record).items()],
             "notes": record.get("notes") or "",
             "date": record.get("date"),
             "by": record.get("by"),
             "completed": bool(record.get("completed")),
             "smoke_detector_date": record.get("smoke_detector_date"),
+            "mattress_date": record.get("mattress_date"),
         }
 
     @app.get("/api/v1/pm")
@@ -1085,6 +1087,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
                 quarters[str(record["quarter"])] = api_pm_record(record)
         # The detector's printed date carries over until someone records a new one.
         smoke_dates = [r["smoke_detector_date"] for r in room_records if r.get("smoke_detector_date")]
+        mattress_dates = [r["mattress_date"] for r in room_records if r.get("mattress_date")]
         return {
             "room": room, "year": year,
             "room_type": ((properties.load().get(location) or {}).get("room_types") or {}).get(room),
@@ -1092,14 +1095,17 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "items": pm_items_for(location),
             "quarters": quarters,
             "smoke_detector_date": smoke_dates[-1] if smoke_dates else None,
+            "mattress_date": mattress_dates[-1] if mattress_dates else None,
             "open_requests": [api_issue(i) for i in open_pm_issues(location) if i["room"] == room],
         }
 
     @app.put("/api/v1/pm/rooms/<room>/<int:year>/<int:quarter>")
     def api_save_pm(room, year, quarter):
         """Save a room's checklist for a quarter:
-        {"ratings": [{"item", "rating": 0-3}], "notes": "", "date": "YYYY-MM-DD", "complete": bool,
+        {"ratings": [{"item", "rating": "ok"|"clean"|"paint"|"repair"|"replace"}], "notes": "",
+         "date": "YYYY-MM-DD", "complete": bool,
          "smoke_detector_date": "YYYY-MM-DD",  # date printed on the detector
+         "mattress_date": "YYYY-MM-DD",  # date on the mattress label
          "close_request_ids": [...]}  # PM requests finished during this PM
         Completing needs every item rated; the tag date defaults to today."""
         location, problem = location_for(roles=PM_ROLES)
@@ -1109,7 +1115,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         if quarter not in (1, 2, 3, 4) or (year, quarter) > quarter_of(today()):
             return error("Choose this quarter or an earlier one.", 400)
         data = body()
-        items = pm_items_for(location)
+        options = {i["name"]: i["options"] for i in pm_items_for(location)}
         raw = data.get("ratings") or {}
         if isinstance(raw, list):  # [{"item": ..., "rating": ...}], as the app sends it
             raw = {str(r.get("item")): r.get("rating") for r in raw if isinstance(r, dict)}
@@ -1117,15 +1123,14 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             return error("Ratings must be a list of {item, rating}.", 400)
         ratings = {}
         for item, value in raw.items():
-            if item not in items:
-                continue  # an item since removed from the checklist
-            if value is None:
-                continue
-            if value not in RATINGS:
-                return error(f"'{item}' needs a rating from 0 to 3.", 400)
-            ratings[item] = value
+            if item not in options or value is None:
+                continue  # an item since removed from the checklist, or left blank
+            rating = normalize_rating(value)
+            if rating not in options[item]:
+                return error(f"'{item}' can be " + ", ".join(o.capitalize() for o in options[item]).replace("Ok", "OK") + ".", 400)
+            ratings[item] = rating
         complete = bool(data.get("complete"))
-        missing = [item for item in items if item not in ratings]
+        missing = [item for item in options if item not in ratings]
         if complete and missing:
             return error(f"Rate every item before completing ({len(missing)} left).", 400)
         tag_date = None
@@ -1136,12 +1141,14 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             except ValueError:
                 return error("Select a valid tag date.", 400)
         notes = str(data.get("notes") or "").strip()[:2000]
-        smoke_date = None
-        if data.get("smoke_detector_date"):
-            try:
-                smoke_date = datetime.strptime(str(data["smoke_detector_date"]).strip(), "%Y-%m-%d").date().isoformat()
-            except ValueError:
-                return error("Select a valid smoke detector date.", 400)
+        label_dates = {}
+        for field, label in (("smoke_detector_date", "smoke detector"), ("mattress_date", "mattress")):
+            label_dates[field] = None
+            if data.get(field):
+                try:
+                    label_dates[field] = datetime.strptime(str(data[field]).strip(), "%Y-%m-%d").date().isoformat()
+                except ValueError:
+                    return error(f"Select a valid {label} date.", 400)
         close_ids = data.get("close_request_ids") or []
         if not isinstance(close_ids, list):
             return error("close_request_ids must be a list.", 400)
@@ -1157,7 +1164,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "completed": complete,
             "date": tag_date.isoformat() if tag_date else None,
             "by": session["user"],
-            "smoke_detector_date": smoke_date,
+            **label_dates,
         })
         for issue_id in close_ids:
             store.close_issue(issue_id, session["user"], f"Done during Q{quarter} {year} PM.", location)

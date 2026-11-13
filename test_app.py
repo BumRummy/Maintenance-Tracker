@@ -714,6 +714,9 @@ class MaintenanceIssueTests(unittest.TestCase):
                 quarter = client.get("/api/v1/pm").get_json()
                 self.assertEqual((quarter["year"], quarter["quarter"], quarter["ends"]), (2026, 4, "2026-12-31"))
                 self.assertEqual(len(quarter["items"]), len(DEFAULT_PM_ITEMS))
+                headboard = next(i for i in quarter["items"] if i["name"] == "Headboard")
+                self.assertEqual(headboard["options"], ["ok", "clean", "repair", "replace"])
+                self.assertNotIn("Drapes: Clean/Charged", [i["name"] for i in quarter["items"]])
                 rooms = {r["room"]: r for r in quarter["rooms"]}
                 # Only listed rooms get PM; 305 isn't on the list, so its request is listed separately.
                 self.assertEqual(list(rooms), ["115", "119", "210"])
@@ -721,19 +724,24 @@ class MaintenanceIssueTests(unittest.TestCase):
                 self.assertEqual([i["room"] for i in quarter["other_requests"]], ["305"])
                 self.assertEqual(client.get("/api/v1/pm?year=2027&quarter=1").status_code, 400)
 
-                partial = client.put("/api/v1/pm/rooms/119/2026/4", json={"ratings": [{"item": "Mirror", "rating": 3}]})
+                partial = client.put("/api/v1/pm/rooms/119/2026/4", json={"ratings": [{"item": "Mirror", "rating": "ok"}]})
                 self.assertEqual(partial.status_code, 200)
                 self.assertEqual(client.put("/api/v1/pm/rooms/119/2026/4", json={
-                    "ratings": {"Mirror": 3}, "complete": True}).status_code, 400)
-                ratings = {item: 3 for item in DEFAULT_PM_ITEMS}
-                ratings["Switches / Cover Plates"] = 2
+                    "ratings": {"Mirror": "ok"}, "complete": True}).status_code, 400)
+                # Each item offers only its own options: walls can be painted, a headboard can't.
+                self.assertEqual(client.put("/api/v1/pm/rooms/119/2026/4", json={
+                    "ratings": {"Headboard": "paint"}}).status_code, 400)
+                ratings = {i["name"]: "ok" for i in DEFAULT_PM_ITEMS}
+                ratings["Switches / Cover Plates"] = "replace"
+                ratings["Walls"] = "paint"
                 done = client.put("/api/v1/pm/rooms/119/2026/4", json={
                     "ratings": ratings, "notes": "Replaced switch plate", "complete": True,
                     "smoke_detector_date": "2019-06-01",
+                    "mattress_date": "2022-02-14",
                     "close_request_ids": [pm_request["id"]],
                 }).get_json()
                 self.assertEqual(done["quarters"]["4"]["date"], "2026-11-13")
-                self.assertIn({"item": "Switches / Cover Plates", "rating": 2}, done["quarters"]["4"]["ratings"])
+                self.assertIn({"item": "Switches / Cover Plates", "rating": "replace"}, done["quarters"]["4"]["ratings"])
                 self.assertEqual(done["open_requests"], [])
                 # Paper records from earlier quarters can be entered too.
                 self.assertEqual(client.put("/api/v1/pm/rooms/119/2026/1", json={
@@ -749,6 +757,7 @@ class MaintenanceIssueTests(unittest.TestCase):
                 self.assertIsNone(detail["quarters"]["2"])
                 # Q4 recorded the detector date; it carries over to the room.
                 self.assertEqual(detail["smoke_detector_date"], "2019-06-01")
+                self.assertEqual(detail["mattress_date"], "2022-02-14")
                 self.assertEqual(client.put("/api/v1/pm/rooms/119/2026/4", json={
                     "ratings": [], "smoke_detector_date": "June"}).status_code, 400)
 
@@ -834,6 +843,26 @@ class MaintenanceIssueTests(unittest.TestCase):
                 rooms = {r["room"]: r for r in client.get("/api/v1/pm").get_json()["rooms"]}
                 self.assertEqual((rooms["119"]["type"], rooms["210"]["type"]), ("SXBV", "NQRUB"))
                 self.assertEqual(client.get("/api/v1/pm/rooms/210").get_json()["room_type"], "NQRUB")
+
+    def test_pm_checklists_saved_before_item_options_still_read(self):
+        from pm import PMRecords, clean_items
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            # The first version stored long names and 0-3 numbers (0 Paint, 1 Repair, 2 Replace, 3 OK).
+            PMRecords(config_path).upsert("HCK", "115", 2026, 1, {
+                "ratings": {"Walls: Free of marks/clean": 0, "Drapes: Clean/Charged": 3}, "completed": False})
+            client = app.test_client()
+            self.login(client, "maintenance")
+            q1 = client.get("/api/v1/pm/rooms/115?year=2026").get_json()["quarters"]["1"]["ratings"]
+            self.assertIn({"item": "Walls", "rating": "paint"}, q1)
+            self.assertIn({"item": "Drapes", "rating": "ok"}, q1)
+
+        items, message = clean_items(["Ceiling", {"name": "Minibar", "options": ["clean", "replace"]}])
+        self.assertIsNone(message)
+        self.assertEqual(items[1], {"name": "Minibar", "options": ["ok", "clean", "replace"]})
+        self.assertIsNotNone(clean_items([{"name": "Minibar", "options": ["ok"]}])[1])
+        self.assertIsNotNone(clean_items([{"name": "Minibar", "options": ["charge"]}])[1])
 
     def use_known_passwords(self, app):
         """Fresh deployments seed random passwords; give every account "changeme" for API tests."""
