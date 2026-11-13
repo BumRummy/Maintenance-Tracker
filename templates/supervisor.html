@@ -28,6 +28,10 @@
       <textarea name="rooms" rows="4" placeholder="101-130, 201-230, 305B">{{ rooms | join(', ') }}</textarea>
     </label>
     <p class="card-copy">Separate rooms with commas or spaces. Use a dash for a run of rooms, like 101-130.</p>
+    <label>Room types, one per line
+      <textarea name="room_types" rows="4" placeholder="101-110 KXTD&#10;111-118 SXBV&#10;210 NQRUB">{{ room_type_lines }}</textarea>
+    </label>
+    <p class="card-copy">A room or run of rooms, then its type code. Shown on the PM checklist and in room search.</p>
     <label>Public areas ({{ areas | length }}), one per line
       <textarea name="areas" rows="5" placeholder="Lobby&#10;Pool&#10;Exterior&#10;Laundry">{{ areas | join('\n') }}</textarea>
     </label>
