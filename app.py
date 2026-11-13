@@ -1191,7 +1191,8 @@ def create_app() -> Flask:
                     flash(f"Password reset for '{managed_user['username']}'.", "success")
             elif action == "save_places":
                 message = app.extensions["save_places"](
-                    location, request.form.get("rooms", ""), request.form.get("areas", ""))
+                    location, request.form.get("rooms", ""), request.form.get("areas", ""),
+                    request.form.get("room_types", ""))
                 if message:
                     flash(message, "error")
                 else:
@@ -1215,7 +1216,7 @@ def create_app() -> Flask:
         issues = _issues_for_location(location)
         rooms, areas = app.extensions["places_for"](location)
         return render_template("supervisor.html", users=users, location=location, issues=issues,
-                               rooms=rooms, areas=areas)
+                               rooms=rooms, areas=areas, room_type_lines=app.extensions["room_type_lines"](location))
 
     @app.get("/supervisor/report.csv")
     def supervisor_report_csv():

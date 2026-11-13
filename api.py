@@ -182,6 +182,63 @@ def expand_room_text(text: str) -> tuple[list[str] | None, str | None]:
     return rooms, None
 
 
+MAX_ROOM_TYPE_LENGTH = 12
+
+
+def clean_room_type(value) -> tuple[str | None, str | None]:
+    """A room type code such as KXTD; blank clears it. Returns (code, error)."""
+    code = str(value or "").strip().upper()
+    if not code:
+        return None, None
+    if len(code) > MAX_ROOM_TYPE_LENGTH or not all(c.isalnum() or c in "-_/" for c in code):
+        return None, f"'{code}' isn't a valid room type code."
+    return code, None
+
+
+def parse_room_type_lines(text: str) -> tuple[list[tuple[list[str], str | None]] | None, str | None]:
+    """Web form lines like "101-110 KXTD" or "115 SXBV" → [(rooms, code)]."""
+    entries = []
+    for line in str(text or "").splitlines():
+        parts = line.replace(",", " ").split()
+        if not parts:
+            continue
+        if len(parts) < 2:
+            return None, f"'{line.strip()}' needs a room and a type code, like 101-110 KXTD."
+        rooms, message = expand_room_text(" ".join(parts[:-1]))
+        if message:
+            return None, message
+        code, message = clean_room_type(parts[-1])
+        if message:
+            return None, message
+        entries.append(([r.upper() for r in rooms], code))
+    return entries, None
+
+
+def room_type_lines(rooms: list[str], types: dict) -> str:
+    """The reverse, for prefilling the web form: runs of numbered rooms with one code become ranges."""
+    lines, run = [], []
+
+    def flush():
+        if run:
+            first, last, code = run[0], run[-1], types[run[0]]
+            lines.append(f"{first}-{last} {code}" if len(run) > 1 else f"{first} {code}")
+            run.clear()
+
+    for room in rooms:
+        code = types.get(room)
+        if not code:
+            flush()
+            continue
+        if run and room.isdigit() and run[-1].isdigit() and int(room) == int(run[-1]) + 1 \
+                and len(room) == len(run[-1]) and types[run[-1]] == code:
+            run.append(room)
+        else:
+            flush()
+            run.append(room)
+    flush()
+    return "\n".join(lines)
+
+
 MAX_AREAS = 200
 MAX_AREA_LENGTH = 40
 
@@ -286,8 +343,10 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
 
     app.extensions["resolve_place"] = resolve_place
     app.extensions["places_for"] = places_for
+    app.extensions["room_type_lines"] = lambda location: room_type_lines(
+        *places_for(location)[:1], (properties.load().get(location) or {}).get("room_types") or {})
 
-    def save_places(location: str, rooms_text: str, areas_text: str) -> str | None:
+    def save_places(location: str, rooms_text: str, areas_text: str, types_text: str = "") -> str | None:
         """The web supervisor page's Rooms & Areas form. Returns an error message, or None."""
         typed, message = expand_room_text(rooms_text)
         if message:
@@ -298,10 +357,20 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         areas, message = clean_areas(str(areas_text or "").splitlines(), rooms)
         if message:
             return message
+        entries, message = parse_room_type_lines(types_text)
+        if message:
+            return message
+        types = {}
+        for typed_rooms, code in entries:
+            for room in typed_rooms:
+                if room not in rooms:
+                    return f"Room {room} has a type but isn't in the room list."
+                if code:
+                    types[room] = code
         with _property_lock:
             everything = properties.load()
             record = dict(everything.get(location) or {})
-            record.update(rooms=rooms, areas=areas, updated_at=_now(), updated_by=session["user"])
+            record.update(rooms=rooms, areas=areas, room_types=types, updated_at=_now(), updated_by=session["user"])
             everything[location] = record
             properties.save(everything)
         return None
@@ -827,6 +896,8 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "address": record.get("address") or "",
             "phone": record.get("phone") or "",
             "rooms": record.get("rooms") or [],
+            # A list, not an object keyed by room, so clients never rewrite the keys ("305B").
+            "room_types": [{"room": room, "type": code} for room, code in (record.get("room_types") or {}).items()],
             "areas": record.get("areas") or [],
             "pm_items": record.get("pm_items") or DEFAULT_PM_ITEMS,
             "updated_at": record.get("updated_at"),
@@ -844,7 +915,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     @app.put("/api/v1/property")
     def api_update_property():
         """Supervisors edit their own location: any of name, address, phone, rooms (full list),
-        pm_items (the quarterly checklist, in order)."""
+        room_types ([{room, type}] to set or clear), areas, pm_items (the quarterly checklist, in order)."""
         location, problem = location_for(roles=PROPERTY_ROLES)
         if problem:
             return problem
@@ -863,6 +934,27 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
                 if message:
                     return error(message, 400)
                 record["rooms"] = rooms
+            if "room_types" in data:  # [{"room", "type"}]: sets each listed room; a blank type clears it
+                entries = data["room_types"]
+                if not isinstance(entries, list):
+                    return error("room_types must be a list of {room, type}.", 400)
+                types = dict(record.get("room_types") or {})
+                room_set = set(record.get("rooms") or [])
+                for entry in entries:
+                    room = str((entry or {}).get("room", "")).strip().upper()
+                    if room not in room_set:
+                        return error(f"Room {room or '?'} isn't on the room list.", 400)
+                    code, message = clean_room_type((entry or {}).get("type"))
+                    if message:
+                        return error(message, 400)
+                    if code:
+                        types[room] = code
+                    else:
+                        types.pop(room, None)
+                record["room_types"] = types
+            if "rooms" in data:  # rooms taken off the list lose their type
+                record["room_types"] = {r: c for r, c in (record.get("room_types") or {}).items()
+                                        if r in set(record["rooms"])}
             if "areas" in data or "rooms" in data:
                 areas, message = clean_areas(data.get("areas", record.get("areas") or []), record.get("rooms") or [])
                 if message:
@@ -937,7 +1029,9 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         items = pm_items_for(location)
         records = {r["room"]: r for r in pm_records.for_location(location)
                    if r["year"] == year and r["quarter"] == quarter}
-        listed = (properties.load().get(location) or {}).get("rooms") or []
+        prop = properties.load().get(location) or {}
+        listed = prop.get("rooms") or []
+        room_types = prop.get("room_types") or {}
         listed_keys = {place_key(r) for r in listed}
         open_counts: dict[str, int] = {}
         other_requests = []  # areas, and older requests typed with free text
@@ -958,6 +1052,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
                 "date": record.get("date") if record else None,
                 "by": record.get("by") if record else None,
                 "open_requests": open_counts.get(room, 0),
+                "type": room_types.get(room),
             })
         return jsonify({
             "year": year, "quarter": quarter, "starts": start.isoformat(), "ends": end.isoformat(),
@@ -992,6 +1087,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         smoke_dates = [r["smoke_detector_date"] for r in room_records if r.get("smoke_detector_date")]
         return {
             "room": room, "year": year,
+            "room_type": ((properties.load().get(location) or {}).get("room_types") or {}).get(room),
             "current_quarter": current_quarter if year == current_year else None,
             "items": pm_items_for(location),
             "quarters": quarters,

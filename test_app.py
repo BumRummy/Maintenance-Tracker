@@ -801,6 +801,40 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertEqual((saved["rooms"], saved["areas"]), (["101", "102", "103", "223"], ["Lobby", "Pool"]))
             self.assertIn(b"101, 102, 103, 223", client.get("/supervisor").data)
 
+    def test_room_type_codes(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+            self.login(client, "supervisor")
+            client.put("/api/v1/property", json={"rooms": ["115", "116", "117", "119", "210", "305B"]})
+
+            saved = client.put("/api/v1/property", json={"room_types": [
+                {"room": "115", "type": "kxtd"}, {"room": "305b", "type": "SXBV"}]}).get_json()
+            self.assertIn({"room": "115", "type": "KXTD"}, saved["room_types"])
+            self.assertIn({"room": "305B", "type": "SXBV"}, saved["room_types"])
+            self.assertEqual(client.put("/api/v1/property", json={"room_types": [{"room": "999", "type": "X"}]}).status_code, 400)
+            cleared = client.put("/api/v1/property", json={"room_types": [{"room": "305B", "type": ""}]}).get_json()
+            self.assertEqual(cleared["room_types"], [{"room": "115", "type": "KXTD"}])
+            # Taking a room off the list drops its type.
+            self.assertEqual(client.put("/api/v1/property", json={"rooms": ["116"]}).get_json()["room_types"], [])
+
+            # Website form: ranges in, ranges back out.
+            with client.session_transaction() as session:
+                session["user"] = "supervisor"
+                session["role"] = "supervisor"
+            client.post("/supervisor", data={"action": "save_places", "rooms": "115-119, 210", "areas": "Lobby",
+                                             "room_types": "115-118 KXTD\n119 SXBV\n210 NQRUB"})
+            page = client.get("/supervisor").data
+            self.assertIn(b"115-118 KXTD\n119 SXBV\n210 NQRUB", page)
+            self.assertEqual(client.post("/supervisor", data={"action": "save_places", "rooms": "115", "areas": "",
+                                                              "room_types": "KXTD"}).status_code, 302)
+            with patch("api.datetime") as fake_datetime:
+                fake_datetime.now.return_value = datetime(2026, 11, 13, 12, tzinfo=timezone.utc)
+                rooms = {r["room"]: r for r in client.get("/api/v1/pm").get_json()["rooms"]}
+                self.assertEqual((rooms["119"]["type"], rooms["210"]["type"]), ("SXBV", "NQRUB"))
+                self.assertEqual(client.get("/api/v1/pm/rooms/210").get_json()["room_type"], "NQRUB")
+
     def use_known_passwords(self, app):
         """Fresh deployments seed random passwords; give every account "changeme" for API tests."""
         store = app.config["STORE"]
