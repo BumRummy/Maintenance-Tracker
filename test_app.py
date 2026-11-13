@@ -631,6 +631,64 @@ class MaintenanceIssueTests(unittest.TestCase):
             web = next(i for i in app.config["STORE"].load_issues() if i["room"] == "305")
             self.assertEqual((web["category"], web["urgent"]), ("guest", True))
 
+    def test_new_requests_notify_iphones_at_the_same_location(self):
+        class FakeSender:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, client, token, payload, sandbox):
+                self.sent.append((token, payload, sandbox))
+                return (410, "Unregistered") if token == "dead" else (200, "")
+
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            sender = FakeSender()
+            app.config.update(APNS_SENDER=sender, APNS_SYNC=True)
+            self.use_known_passwords(app)
+            client = app.test_client()
+
+            self.login(client, "maintenance")
+            self.assertEqual(client.post("/api/v1/devices", json={"token": "not hex!"}).status_code, 400)
+            ok = client.post("/api/v1/devices", json={"token": "AB12", "sandbox": True}).get_json()
+            self.assertTrue(ok["notifications"])
+            client.post("/api/v1/devices", json={"token": "de", "sandbox": False})
+            client.post("/api/v1/logout")
+            self.login(client, "frontdesk")  # front desk phones aren't alerted
+            client.post("/api/v1/devices", json={"token": "fd"})
+            from apns import Devices
+            Devices(config_path).register("dead", "maintenance", "maintenance", "HCK", False)
+            Devices(config_path).register("cc", "other", "maintenance", "HCK2", False)
+
+            client.post("/api/v1/issues", json={"room": "214", "issues": [{"description": "Leak", "category": "guest"}]})
+
+            self.assertEqual(sorted(t for t, _, _ in sender.sent), ["ab12", "de", "dead"])
+            token, payload, sandbox = next(x for x in sender.sent if x[0] == "ab12")
+            self.assertTrue(sandbox)
+            self.assertEqual(payload["aps"]["alert"]["title"], "New job · Room 214")
+            self.assertNotIn("dead", [d["token"] for d in Devices(config_path).load()])
+
+            client.post("/api/v1/logout")
+            self.login(client, "maintenance")
+            client.delete("/api/v1/devices/AB12")
+            self.assertNotIn("ab12", [d["token"] for d in Devices(config_path).load()])
+
+    def test_apns_provider_token_is_signed_with_the_auth_key(self):
+        import jwt
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import ec
+        from apns import APNsSender
+
+        key = ec.generate_private_key(ec.SECP256R1())
+        pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                serialization.NoEncryption()).decode()
+        sender = APNsSender(pem, "KEY1234567", "TEAM123456", "Com.HotelCraft.Maintenance")
+        token = sender.provider_token()
+
+        self.assertEqual(jwt.get_unverified_header(token)["kid"], "KEY1234567")
+        claims = jwt.decode(token, key.public_key(), algorithms=["ES256"])
+        self.assertEqual(claims["iss"], "TEAM123456")
+        self.assertIs(sender.provider_token(), token)  # reused until it nears expiry
+
     def use_known_passwords(self, app):
         """Fresh deployments seed random passwords; give every account "changeme" for API tests."""
         store = app.config["STORE"]
