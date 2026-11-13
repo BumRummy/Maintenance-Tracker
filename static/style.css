@@ -125,6 +125,7 @@ button:hover { background: #e2e8f0; }
 .category-picker legend { font-size: .85rem; color: #64748b; padding: 0 .3rem; }
 .radio-option, .checkbox-option { display: flex; align-items: center; gap: .5rem; }
 .radio-option input, .checkbox-option input { padding: 0; }
+.tile-urgent { display: inline-block; font-size: .75rem; font-weight: 700; letter-spacing: .04em; color: #fff; background: #dc2626; border-radius: 6px; padding: .2rem .55rem; }
 .tile-checkout { font-size: .85rem; color: #92400e; background: #fef3c7; border-radius: 6px; padding: .35rem .6rem; }
 
 /* Desktop: show both categories side by side; narrow screens show the active tab only */

@@ -30,6 +30,7 @@ ISSUE_CATEGORIES = ("guest", "maintenance")
 DEFAULT_CATEGORY = "maintenance"  # category assumed for issues saved before categories existed
 DEFAULT_NEW_ISSUE_CATEGORY = "guest"  # tab and form choice everyone starts on
 MAX_ISSUES_PER_SUBMIT = 20
+URGENT_ROLES = ("supervisor", "admin")  # who can send an urgent PM task to Guest Issues
 
 # Accounts created on a brand-new deployment. They carry no password here: the
 # store generates a random one for each when it first writes settings.json,
@@ -238,6 +239,7 @@ class Store:
         location: str,
         category: str = DEFAULT_CATEGORY,
         checkout_date: str | None = None,
+        urgent: bool = False,
     ) -> dict:
         issues = self.load_issues()
         issue = {
@@ -251,6 +253,7 @@ class Store:
             "category": category if category in ISSUE_CATEGORIES else DEFAULT_CATEGORY,
             "do_on_checkout": bool(checkout_date),
             "checkout_date": checkout_date or None,
+            "urgent": urgent,
             "closed_at": None,
             "closed_by": None,
             "resolution": None,
@@ -836,21 +839,29 @@ def create_app() -> Flask:
             if not room or not description:
                 flash("Room and a description for every issue are required.", "error")
                 return redirect(url_for("dashboard", tab=category))
+            # Supervisors can flag a PM task urgent; urgent work goes straight to Guest Issues.
+            urgent = (
+                category == "maintenance"
+                and session.get("role") in URGENT_ROLES
+                and bool(request.form.get(f"urgent{suffix}"))
+            )
+            if urgent:
+                category = "guest"
             checkout_date = None
-            if category == "guest" and request.form.get(f"do_on_checkout{suffix}"):
+            if category == "guest" and not urgent and request.form.get(f"do_on_checkout{suffix}"):
                 raw_date = request.form.get(f"checkout_date{suffix}", "").strip()
                 try:
                     checkout_date = datetime.strptime(raw_date, "%Y-%m-%d").date().isoformat()
                 except ValueError:
                     flash("Select a valid checkout date.", "error")
                     return redirect(url_for("dashboard", tab=category))
-            entries.append((description, category, checkout_date))
+            entries.append((description, category, checkout_date, urgent))
         location = _location_for_current_user()
         if not location:
             session.clear()
             return redirect(url_for("login"))
-        for description, category, checkout_date in entries:
-            issue = store.add_issue(room, description, session["user"], location, category, checkout_date)
+        for description, category, checkout_date, urgent in entries:
+            issue = store.add_issue(room, description, session["user"], location, category, checkout_date, urgent)
             _send_new_issue_notifications(issue)
         if len(entries) == 1:
             flash(f"Issue submitted for room {room.upper()}.", "success")
@@ -985,6 +996,7 @@ def create_app() -> Flask:
         ISSUE_CATEGORIES=ISSUE_CATEGORIES,
         DEFAULT_NEW_ISSUE_CATEGORY=DEFAULT_NEW_ISSUE_CATEGORY,
         MAX_ISSUES_PER_SUBMIT=MAX_ISSUES_PER_SUBMIT,
+        URGENT_ROLES=URGENT_ROLES,
     ))
 
     @app.route("/admin", methods=["GET", "POST"])

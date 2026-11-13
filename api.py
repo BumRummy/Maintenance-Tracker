@@ -25,9 +25,13 @@ ALL_ROLES = ("front_desk", "supervisor", "maintenance", "admin")
 WORK_ROLES = ("maintenance", "admin")
 INVENTORY_ROLES = ("maintenance", "supervisor", "admin")
 REPORT_ROLES = ("supervisor", "admin")
+PROPERTY_ROLES = ("supervisor", "admin")
+MAX_ROOMS = 3000
+MAX_ROOM_LENGTH = 12
 WORK_EVENTS = ("start", "stop", "awaiting_parts", "parts_received")
 
 _inventory_lock = Lock()
+_property_lock = Lock()
 
 
 def _now() -> str:
@@ -114,12 +118,54 @@ class Inventory:
             json.dump(items, f, indent=2)
 
 
+class Properties:
+    """Per-location property details (name, address, phone, room list) in properties.json,
+    keyed by location."""
+
+    def __init__(self, config_dir: str):
+        self.path = Path(config_dir) / "properties.json"
+
+    def load(self) -> dict:
+        if not self.path.exists():
+            return {}
+        with self.path.open(encoding="utf-8") as f:
+            return json.load(f)
+
+    def save(self, data: dict) -> None:
+        with self.path.open("w", encoding="utf-8") as f:
+            json.dump(data, f, indent=2)
+
+
+def room_sort_key(room: str):
+    """Numeric rooms in number order ("98" before "214"), then anything else alphabetically."""
+    digits = "".join(c for c in room if c.isdigit())
+    return (0, int(digits), room) if digits else (1, 0, room)
+
+
+def clean_rooms(raw) -> tuple[list[str] | None, str | None]:
+    """Uppercase, de-duplicate and sort a room list; returns (rooms, error)."""
+    if not isinstance(raw, list):
+        return None, "Rooms must be a list."
+    rooms = set()
+    for value in raw:
+        room = str(value or "").strip().upper()
+        if not room:
+            continue
+        if len(room) > MAX_ROOM_LENGTH or not all(c.isalnum() or c in "-" for c in room):
+            return None, f"'{room}' isn't a valid room number."
+        rooms.add(room)
+    if len(rooms) > MAX_ROOMS:
+        return None, f"A property can have at most {MAX_ROOMS} rooms."
+    return sorted(rooms, key=room_sort_key), None
+
+
 def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     """Add /api/v1 routes. ``h`` carries helpers defined inside create_app:
     current_user, location_for_current_user, issues_for_location, issue_category,
     normalize_users, send_new_issue_notifications, verify_password, hash_password, and the constants
-    DEFAULT_LOCATION, ISSUE_CATEGORIES, DEFAULT_NEW_ISSUE_CATEGORY, MAX_ISSUES_PER_SUBMIT."""
+    DEFAULT_LOCATION, ISSUE_CATEGORIES, DEFAULT_NEW_ISSUE_CATEGORY, MAX_ISSUES_PER_SUBMIT, URGENT_ROLES."""
     inventory = Inventory(store.config_dir)
+    properties = Properties(store.config_dir)
 
     def error(message: str, status: int):
         return jsonify({"error": message}), status
@@ -138,6 +184,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "status": issue["status"],
             "work_state": work_state(issue),
             "checkout_date": issue.get("checkout_date"),
+            "urgent": bool(issue.get("urgent")),
             "created_at": issue["created_at"],
             "created_by": issue["created_by"],
             "edited_at": issue.get("edited_at"),
@@ -295,13 +342,19 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             category = entry.get("category") if entry.get("category") in h.ISSUE_CATEGORIES else h.DEFAULT_NEW_ISSUE_CATEGORY
             if not description:
                 return error("Every issue needs a description.", 400)
+            # An urgent PM task goes straight to Guest Issues so it is worked first.
+            urgent = bool(entry.get("urgent"))
+            if urgent:
+                if session.get("role") not in h.URGENT_ROLES:
+                    return error("Only supervisors can mark a request urgent.", 403)
+                category = "guest"
             date, ok = checkout_date(entry, category)
             if not ok:
                 return error("Select a valid checkout date.", 400)
-            parsed.append((description, category, date))
+            parsed.append((description, category, None if urgent else date, urgent))
         created = []
-        for description, category, date in parsed:
-            issue = store.add_issue(room, description, session["user"], location, category, date)
+        for description, category, date, urgent in parsed:
+            issue = store.add_issue(room, description, session["user"], location, category, date, urgent)
             h.send_new_issue_notifications(issue)
             created.append(api_issue(issue))
         return jsonify({"issues": created}), 201
@@ -574,6 +627,169 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             if len(remaining) == len(items):
                 return error("Part not found.", 404)
             inventory.save(remaining)
+        return jsonify({"ok": True})
+
+    # ---- Property settings ----
+
+    def api_property(location: str, record: dict | None) -> dict:
+        record = record or {}
+        return {
+            "location": location,
+            "name": record.get("name") or "",
+            "address": record.get("address") or "",
+            "phone": record.get("phone") or "",
+            "rooms": record.get("rooms") or [],
+            "updated_at": record.get("updated_at"),
+            "updated_by": record.get("updated_by"),
+        }
+
+    @app.get("/api/v1/property")
+    def api_get_property():
+        """The signed-in user's property. Everyone can read it; the room list feeds the app."""
+        location, problem = location_for()
+        if problem:
+            return problem
+        return jsonify(api_property(location, properties.load().get(location)))
+
+    @app.put("/api/v1/property")
+    def api_update_property():
+        """Supervisors edit their own location: any of name, address, phone, rooms (full list)."""
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        data = body()
+        with _property_lock:
+            everything = properties.load()
+            record = dict(everything.get(location) or {})
+            for field, limit in (("name", 120), ("address", 500), ("phone", 40)):
+                if field in data:
+                    value = str(data[field] or "").strip()
+                    if len(value) > limit:
+                        return error(f"{field.capitalize()} is too long.", 400)
+                    record[field] = value
+            if "rooms" in data:
+                rooms, message = clean_rooms(data["rooms"])
+                if message:
+                    return error(message, 400)
+                record["rooms"] = rooms
+            record["updated_at"] = _now()
+            record["updated_by"] = session["user"]
+            everything[location] = record
+            properties.save(everything)
+        return jsonify(api_property(location, record))
+
+    # ---- Users (same rules as the web supervisor page) ----
+
+    MANAGED_ROLES = ("maintenance", "front_desk", "supervisor")
+
+    def api_user(user: dict) -> dict:
+        return {
+            "username": user["username"],
+            "email": user.get("email") or "",
+            "role": user["role"],
+            "must_change_password": bool(user.get("force_password_change")),
+        }
+
+    def managed_users(settings: dict, location: str) -> list[dict]:
+        """Non-admin accounts at ``location``; admins are managed only on the web admin page."""
+        return [u for u in settings["users"] if u.get("location") == location and u.get("role") != "admin"]
+
+    def load_users_settings() -> dict:
+        settings = store.load_settings()
+        if h.normalize_users(settings):
+            store.save_settings(settings)
+        return settings
+
+    @app.get("/api/v1/users")
+    def api_users():
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        users = sorted(managed_users(load_users_settings(), location), key=lambda u: u["username"])
+        return jsonify({"users": [api_user(u) for u in users]})
+
+    @app.post("/api/v1/users")
+    def api_add_user():
+        """{"username", "email", "role", "password"}: a temporary password the person changes at first sign-in."""
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        data = body()
+        username = str(data.get("username", "")).strip().lower()
+        email = str(data.get("email", "")).strip().lower()
+        role = str(data.get("role", "")).strip()
+        password = str(data.get("password", "")).strip()
+        if not username or not email or not password or role not in MANAGED_ROLES:
+            return error("Username, email, password, and a valid role are required.", 400)
+        if len(password) < 8:
+            return error("Password must be at least 8 characters.", 400)
+        if not all(c.isalnum() or c in "-_." for c in username):
+            return error("Usernames can use letters, numbers, dots, dashes and underscores.", 400)
+        settings = load_users_settings()
+        if any(u["username"].lower() == username for u in settings["users"]):
+            return error("Username already exists.", 400)
+        user = {
+            "username": username,
+            "email": email,
+            "password": h.hash_password(password),
+            "role": role,
+            "location": location,
+            "force_password_change": True,
+            "reset_token": None,
+            "reset_expires_at": None,
+        }
+        settings["users"].append(user)
+        store.save_settings(settings)
+        return jsonify(api_user(user)), 201
+
+    def find_managed(settings: dict, location: str, username: str) -> dict | None:
+        username = username.strip().lower()
+        return next((u for u in managed_users(settings, location) if u["username"].lower() == username), None)
+
+    @app.patch("/api/v1/users/<username>")
+    def api_update_user(username):
+        """Change role and/or email, or set a temporary password ("password")."""
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        data = body()
+        settings = load_users_settings()
+        user = find_managed(settings, location, username)
+        if not user:
+            return error("User was not found at your location.", 404)
+        if "role" in data:
+            if data["role"] not in MANAGED_ROLES:
+                return error("Select a valid role.", 400)
+            if user["username"] == session["user"] and data["role"] != user["role"]:
+                return error("You can't change your own role.", 400)
+            user["role"] = data["role"]
+        if "email" in data:
+            email = str(data["email"] or "").strip().lower()
+            if not email:
+                return error("Email is required.", 400)
+            user["email"] = email
+        if "password" in data:
+            password = str(data["password"] or "").strip()
+            if len(password) < 8:
+                return error("Password must be at least 8 characters.", 400)
+            user["password"] = h.hash_password(password)
+            user["force_password_change"] = True
+        store.save_settings(settings)
+        return jsonify(api_user(user))
+
+    @app.delete("/api/v1/users/<username>")
+    def api_delete_user(username):
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        settings = load_users_settings()
+        user = find_managed(settings, location, username)
+        if not user:
+            return error("User was not found at your location.", 404)
+        if user["username"] == session["user"]:
+            return error("You can't delete your own account.", 400)
+        settings["users"].remove(user)
+        store.save_settings(settings)
         return jsonify({"ok": True})
 
     # ---- Reports ----

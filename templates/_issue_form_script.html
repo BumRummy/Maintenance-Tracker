@@ -8,7 +8,7 @@
 
     function sync(row) {
       const guest = row.querySelector('input[type=radio]:checked').value === 'guest';
-      const box = row.querySelector('input[type=checkbox]');
+      const box = row.querySelector('[data-checkout]');
       const option = row.querySelector('[data-checkout-option]');
       const wrap = row.querySelector('[data-checkout-date-wrap]');
       const date = row.querySelector('input[type=date]');
@@ -16,6 +16,12 @@
       if (!guest) box.checked = false;
       wrap.hidden = !(guest && box.checked);
       date.required = guest && box.checked;
+      // Supervisors only: an urgent PM task is filed under Guest Issues.
+      const urgent = row.querySelector('[data-urgent]');
+      if (urgent) {
+        row.querySelector('[data-urgent-option]').hidden = guest;
+        if (guest) urgent.checked = false;
+      }
     }
     function updateRemoveButtons() {
       const rows = container.querySelectorAll('[data-row]');
@@ -29,7 +35,7 @@
       const date = row.querySelector('input[type=date]');
       if (e.target.type === 'date') {
         lastCheckoutDate = date.value;
-      } else if (e.target.type === 'checkbox' && e.target.checked) {
+      } else if (e.target.matches('[data-checkout]') && e.target.checked) {
         if (!date.value && lastCheckoutDate) date.value = lastCheckoutDate;
         date.focus();
       }

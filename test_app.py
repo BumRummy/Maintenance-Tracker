@@ -538,6 +538,99 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertEqual(started.status_code, 200)
             self.assertEqual(part.status_code, 200)
 
+    def test_api_property_settings_are_per_location_and_supervisor_only(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+
+            self.login(client, "maintenance")
+            self.assertEqual(client.get("/api/v1/property").get_json()["rooms"], [])
+            self.assertEqual(client.put("/api/v1/property", json={"name": "X"}).status_code, 403)
+            client.post("/api/v1/logout")
+
+            self.login(client, "supervisor")
+            saved = client.put("/api/v1/property", json={
+                "name": "Hampton Inn", "address": "1 Main St", "phone": "555-0100",
+                "rooms": ["214", " 1102 ", "98", "214", "305b", ""],
+            })
+            self.assertEqual(saved.status_code, 200)
+            self.assertEqual(saved.get_json()["rooms"], ["98", "214", "305B", "1102"])
+            self.assertEqual(client.put("/api/v1/property", json={"rooms": ["2 14"]}).status_code, 400)
+            # Updating one field leaves the rest alone.
+            renamed = client.put("/api/v1/property", json={"name": "Hampton Inn HCK"}).get_json()
+            self.assertEqual(renamed["address"], "1 Main St")
+            self.assertEqual(len(renamed["rooms"]), 4)
+
+            settings = app.config["STORE"].load_settings()
+            settings["users"].append({"username": "other", "password": hash_password("changeme"), "role": "supervisor",
+                                      "location": "HCK2", "email": "o@example.com", "force_password_change": False})
+            app.config["STORE"].save_settings(settings)
+            client.post("/api/v1/logout")
+            self.login(client, "other")
+            self.assertEqual(client.get("/api/v1/property").get_json()["rooms"], [])
+
+    def test_api_supervisor_manages_users_at_own_location(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+            self.login(client, "maintenance")
+            self.assertEqual(client.get("/api/v1/users").status_code, 403)
+            client.post("/api/v1/logout")
+            self.login(client, "supervisor")
+
+            names = [u["username"] for u in client.get("/api/v1/users").get_json()["users"]]
+            self.assertNotIn("admin", names)
+            self.assertEqual(client.post("/api/v1/users", json={
+                "username": "maria", "email": "m@example.com", "role": "admin", "password": "temporary1",
+            }).status_code, 400)
+            added = client.post("/api/v1/users", json={
+                "username": "Maria", "email": "m@example.com", "role": "maintenance", "password": "temporary1",
+            })
+            self.assertEqual(added.status_code, 201)
+            self.assertTrue(added.get_json()["must_change_password"])
+            self.assertEqual(client.post("/api/v1/users", json={
+                "username": "maria", "email": "x@example.com", "role": "front_desk", "password": "temporary1",
+            }).status_code, 400)
+            self.assertEqual(client.patch("/api/v1/users/maria", json={"role": "front_desk"}).get_json()["role"], "front_desk")
+            self.assertEqual(client.patch("/api/v1/users/supervisor", json={"role": "maintenance"}).status_code, 400)
+            self.assertEqual(client.patch("/api/v1/users/admin", json={"role": "maintenance"}).status_code, 404)
+            self.assertEqual(client.delete("/api/v1/users/supervisor").status_code, 400)
+            self.assertEqual(client.delete("/api/v1/users/maria").status_code, 200)
+            self.assertNotIn("maria", [u["username"] for u in client.get("/api/v1/users").get_json()["users"]])
+
+    def test_urgent_pm_from_a_supervisor_goes_to_guest_issues(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+            self.login(client, "maintenance")
+            denied = client.post("/api/v1/issues", json={
+                "room": "214", "issues": [{"description": "Leak", "category": "maintenance", "urgent": True}],
+            })
+            self.assertEqual(denied.status_code, 403)
+            client.post("/api/v1/logout")
+
+            self.login(client, "supervisor")
+            created = client.post("/api/v1/issues", json={
+                "room": "214", "issues": [
+                    {"description": "Ceiling leak", "category": "maintenance", "urgent": True, "checkout_date": "2026-11-20"},
+                    {"description": "Filter", "category": "maintenance"},
+                ],
+            }).get_json()["issues"]
+            self.assertEqual((created[0]["category"], created[0]["urgent"], created[0]["checkout_date"]), ("guest", True, None))
+            self.assertEqual((created[1]["category"], created[1]["urgent"]), ("maintenance", False))
+
+            # Same on the website form.
+            with client.session_transaction() as session:
+                session["user"] = "supervisor"
+                session["role"] = "supervisor"
+            client.post("/issues", data={"room": "305", "row": "1", "description_1": "No heat",
+                                         "category_1": "maintenance", "urgent_1": "on"})
+            web = next(i for i in app.config["STORE"].load_issues() if i["room"] == "305")
+            self.assertEqual((web["category"], web["urgent"]), ("guest", True))
+
     def use_known_passwords(self, app):
         """Fresh deployments seed random passwords; give every account "changeme" for API tests."""
         store = app.config["STORE"]
