@@ -1005,6 +1005,7 @@ def create_app() -> Flask:
         DEFAULT_NEW_ISSUE_CATEGORY=DEFAULT_NEW_ISSUE_CATEGORY,
         MAX_ISSUES_PER_SUBMIT=MAX_ISSUES_PER_SUBMIT,
         URGENT_ROLES=URGENT_ROLES,
+        TIMEZONE=display_timezone,
     ))
 
     @app.route("/admin", methods=["GET", "POST"])

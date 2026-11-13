@@ -14,7 +14,7 @@ labor and parts-wait times can be derived later:
 import json
 import statistics
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import threading
 from threading import Lock
@@ -24,12 +24,14 @@ import httpx
 from flask import Flask, jsonify, request, session
 
 from apns import DEAD_TOKEN_REASONS, APNsSender, Devices, new_issue_payload
+from pm import DEFAULT_PM_ITEMS, RATINGS, PMRecords, clean_items, quarter_bounds, quarter_of
 
 ALL_ROLES = ("front_desk", "supervisor", "maintenance", "admin")
 WORK_ROLES = ("maintenance", "admin")
 INVENTORY_ROLES = ("maintenance", "supervisor", "admin")
 REPORT_ROLES = ("supervisor", "admin")
 PROPERTY_ROLES = ("supervisor", "admin")
+PM_ROLES = ("maintenance", "supervisor", "admin")
 MAX_ROOMS = 3000
 MAX_ROOM_LENGTH = 12
 WORK_EVENTS = ("start", "stop", "awaiting_parts", "parts_received")
@@ -171,6 +173,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     DEFAULT_LOCATION, ISSUE_CATEGORIES, DEFAULT_NEW_ISSUE_CATEGORY, MAX_ISSUES_PER_SUBMIT, URGENT_ROLES."""
     inventory = Inventory(store.config_dir)
     properties = Properties(store.config_dir)
+    pm_records = PMRecords(store.config_dir)
     devices = Devices(store.config_dir)
     app.config.setdefault("APNS_SENDER", APNsSender.from_env())
     if not app.config["APNS_SENDER"]:
@@ -711,6 +714,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "address": record.get("address") or "",
             "phone": record.get("phone") or "",
             "rooms": record.get("rooms") or [],
+            "pm_items": record.get("pm_items") or DEFAULT_PM_ITEMS,
             "updated_at": record.get("updated_at"),
             "updated_by": record.get("updated_by"),
         }
@@ -725,7 +729,8 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
 
     @app.put("/api/v1/property")
     def api_update_property():
-        """Supervisors edit their own location: any of name, address, phone, rooms (full list)."""
+        """Supervisors edit their own location: any of name, address, phone, rooms (full list),
+        pm_items (the quarterly checklist, in order)."""
         location, problem = location_for(roles=PROPERTY_ROLES)
         if problem:
             return problem
@@ -744,11 +749,182 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
                 if message:
                     return error(message, 400)
                 record["rooms"] = rooms
+            if "pm_items" in data:
+                items, message = clean_items(data["pm_items"])
+                if message:
+                    return error(message, 400)
+                record["pm_items"] = items
             record["updated_at"] = _now()
             record["updated_by"] = session["user"]
             everything[location] = record
             properties.save(everything)
         return jsonify(api_property(location, record))
+
+    # ---- Quarterly PM checklists ----
+
+    def today() -> date:
+        return datetime.now(h.TIMEZONE).date()
+
+    def pm_items_for(location: str) -> list[str]:
+        return (properties.load().get(location) or {}).get("pm_items") or DEFAULT_PM_ITEMS
+
+    def open_pm_issues(location: str) -> list[dict]:
+        return [i for i in h.issues_for_location(location)
+                if i["status"] == "open" and h.issue_category(i) == "maintenance"]
+
+    def pm_status(record: dict | None, items: list[str]) -> str:
+        if record and record.get("completed"):
+            return "done"
+        if record and any(item in (record.get("ratings") or {}) for item in items):
+            return "in_progress"
+        return "due"
+
+    def requested_quarter() -> tuple[int, int] | None:
+        """?year=&quarter= or the current quarter; None if invalid or in the future."""
+        current = quarter_of(today())
+        try:
+            year = int(request.args.get("year", current[0]))
+            quarter = int(request.args.get("quarter", current[1]))
+        except ValueError:
+            return None
+        if quarter not in (1, 2, 3, 4) or (year, quarter) > current or year < 2000:
+            return None
+        return year, quarter
+
+    def api_pm_record(record: dict | None) -> dict | None:
+        if not record:
+            return None
+        # A list rather than an object keyed by item name, so clients never rewrite the keys.
+        return {
+            "ratings": [{"item": item, "rating": rating} for item, rating in (record.get("ratings") or {}).items()],
+            "notes": record.get("notes") or "",
+            "date": record.get("date"),
+            "by": record.get("by"),
+            "completed": bool(record.get("completed")),
+        }
+
+    @app.get("/api/v1/pm")
+    def api_pm_quarter():
+        """Every room's PM status for a quarter (default: this one). Rooms are the property's room
+        list plus any room with an open PM request or a checklist this quarter."""
+        location, problem = location_for(roles=PM_ROLES)
+        if problem:
+            return problem
+        when = requested_quarter()
+        if not when:
+            return error("Choose this quarter or an earlier one.", 400)
+        year, quarter = when
+        items = pm_items_for(location)
+        records = {r["room"]: r for r in pm_records.for_location(location)
+                   if r["year"] == year and r["quarter"] == quarter}
+        open_counts: dict[str, int] = {}
+        for issue in open_pm_issues(location):
+            open_counts[issue["room"]] = open_counts.get(issue["room"], 0) + 1
+        listed = (properties.load().get(location) or {}).get("rooms") or []
+        rooms = sorted(set(listed) | set(open_counts) | set(records), key=room_sort_key)
+        start, end = quarter_bounds(year, quarter)
+        result = []
+        for room in rooms:
+            record = records.get(room)
+            result.append({
+                "room": room,
+                "status": pm_status(record, items),
+                "date": record.get("date") if record else None,
+                "by": record.get("by") if record else None,
+                "open_requests": open_counts.get(room, 0),
+                "on_room_list": room in listed,
+            })
+        return jsonify({
+            "year": year, "quarter": quarter, "starts": start.isoformat(), "ends": end.isoformat(),
+            "items": items, "rooms": result,
+            "done": sum(1 for r in result if r["status"] == "done"),
+        })
+
+    @app.get("/api/v1/pm/rooms/<room>")
+    def api_pm_room(room):
+        """One room's checklist for a year: every quarter's ratings, plus its open PM requests."""
+        location, problem = location_for(roles=PM_ROLES)
+        if problem:
+            return problem
+        try:
+            year = int(request.args.get("year", quarter_of(today())[0]))
+        except ValueError:
+            return error("Invalid year.", 400)
+        return jsonify(pm_room_detail(location, room.strip().upper(), year))
+
+    def pm_room_detail(location: str, room: str, year: int) -> dict:
+        current_year, current_quarter = quarter_of(today())
+        quarters = {str(q): None for q in (1, 2, 3, 4)}
+        for record in pm_records.for_location(location):
+            if record["room"] == room and record["year"] == year:
+                quarters[str(record["quarter"])] = api_pm_record(record)
+        return {
+            "room": room, "year": year,
+            "current_quarter": current_quarter if year == current_year else None,
+            "items": pm_items_for(location),
+            "quarters": quarters,
+            "open_requests": [api_issue(i) for i in open_pm_issues(location) if i["room"] == room],
+        }
+
+    @app.put("/api/v1/pm/rooms/<room>/<int:year>/<int:quarter>")
+    def api_save_pm(room, year, quarter):
+        """Save a room's checklist for a quarter:
+        {"ratings": [{"item", "rating": 0-3}], "notes": "", "date": "YYYY-MM-DD", "complete": bool,
+         "close_request_ids": [...]}  # PM requests finished during this PM
+        Completing needs every item rated; the tag date defaults to today."""
+        location, problem = location_for(roles=PM_ROLES)
+        if problem:
+            return problem
+        room = room.strip().upper()
+        if quarter not in (1, 2, 3, 4) or (year, quarter) > quarter_of(today()):
+            return error("Choose this quarter or an earlier one.", 400)
+        data = body()
+        items = pm_items_for(location)
+        raw = data.get("ratings") or {}
+        if isinstance(raw, list):  # [{"item": ..., "rating": ...}], as the app sends it
+            raw = {str(r.get("item")): r.get("rating") for r in raw if isinstance(r, dict)}
+        if not isinstance(raw, dict):
+            return error("Ratings must be a list of {item, rating}.", 400)
+        ratings = {}
+        for item, value in raw.items():
+            if item not in items:
+                continue  # an item since removed from the checklist
+            if value is None:
+                continue
+            if value not in RATINGS:
+                return error(f"'{item}' needs a rating from 0 to 3.", 400)
+            ratings[item] = value
+        complete = bool(data.get("complete"))
+        missing = [item for item in items if item not in ratings]
+        if complete and missing:
+            return error(f"Rate every item before completing ({len(missing)} left).", 400)
+        tag_date = None
+        if complete:
+            raw_date = str(data.get("date") or "").strip()
+            try:
+                tag_date = datetime.strptime(raw_date, "%Y-%m-%d").date() if raw_date else today()
+            except ValueError:
+                return error("Select a valid tag date.", 400)
+        notes = str(data.get("notes") or "").strip()[:2000]
+        close_ids = data.get("close_request_ids") or []
+        if not isinstance(close_ids, list):
+            return error("close_request_ids must be a list.", 400)
+        room_issue_ids = {i["id"] for i in open_pm_issues(location) if i["room"] == room}
+        if any(issue_id not in room_issue_ids for issue_id in close_ids):
+            return error("A PM request to close was not found for this room.", 404)
+        if close_ids and session.get("role") not in WORK_ROLES:
+            return error("Only maintenance can complete requests.", 403)
+
+        pm_records.upsert(location, room, year, quarter, {
+            "ratings": ratings,
+            "notes": notes,
+            "completed": complete,
+            "date": tag_date.isoformat() if tag_date else None,
+            "by": session["user"],
+        })
+        for issue_id in close_ids:
+            store.close_issue(issue_id, session["user"], f"Done during Q{quarter} {year} PM.", location)
+        return jsonify(pm_room_detail(location, room, year))
 
     # ---- Users (same rules as the web supervisor page) ----
 
