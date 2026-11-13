@@ -16,10 +16,14 @@ import statistics
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+import threading
 from threading import Lock
 from types import SimpleNamespace
 
+import httpx
 from flask import Flask, jsonify, request, session
+
+from apns import DEAD_TOKEN_REASONS, APNsSender, Devices, new_issue_payload
 
 ALL_ROLES = ("front_desk", "supervisor", "maintenance", "admin")
 WORK_ROLES = ("maintenance", "admin")
@@ -29,6 +33,7 @@ PROPERTY_ROLES = ("supervisor", "admin")
 MAX_ROOMS = 3000
 MAX_ROOM_LENGTH = 12
 WORK_EVENTS = ("start", "stop", "awaiting_parts", "parts_received")
+NOTIFY_ROLES = ("maintenance", "admin")  # who gets a new-job notification, same as the web push
 
 _inventory_lock = Lock()
 _property_lock = Lock()
@@ -166,6 +171,44 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     DEFAULT_LOCATION, ISSUE_CATEGORIES, DEFAULT_NEW_ISSUE_CATEGORY, MAX_ISSUES_PER_SUBMIT, URGENT_ROLES."""
     inventory = Inventory(store.config_dir)
     properties = Properties(store.config_dir)
+    devices = Devices(store.config_dir)
+    app.config.setdefault("APNS_SENDER", APNsSender.from_env())
+    if not app.config["APNS_SENDER"]:
+        app.logger.warning("iPhone app notifications are off: set APNS_AUTH_KEY, APNS_KEY_ID and APNS_TEAM_ID.")
+
+    def notify_app_devices(issue: dict) -> None:
+        """Alert signed-in iPhones at the issue's location. Runs in the background so
+        creating a request never waits on Apple."""
+        sender = app.config.get("APNS_SENDER")
+        if not sender:
+            return
+        location = issue.get("location", h.DEFAULT_LOCATION)
+        targets = [d for d in devices.load() if d.get("role") in NOTIFY_ROLES and d.get("location") == location]
+        if not targets:
+            return
+        payload = new_issue_payload(issue)
+
+        def deliver():
+            dead = set()
+            with httpx.Client(http2=True, timeout=10) as client:
+                for device in targets:
+                    try:
+                        status, reason = sender.send(client, device["token"], payload, bool(device.get("sandbox")))
+                    except httpx.HTTPError as exc:
+                        app.logger.warning("APNs request failed: %s", exc)
+                        continue
+                    if status == 410 or reason in DEAD_TOKEN_REASONS:
+                        dead.add(device["token"])
+                    elif status != 200:
+                        app.logger.warning("APNs rejected a notification: %s %s", status, reason)
+            devices.remove(dead)
+
+        if app.config.get("APNS_SYNC"):
+            deliver()
+        else:
+            threading.Thread(target=deliver, daemon=True).start()
+
+    app.extensions["notify_app_devices"] = notify_app_devices
 
     def error(message: str, status: int):
         return jsonify({"error": message}), status
@@ -300,6 +343,35 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         user["force_password_change"] = False
         store.save_settings(settings)
         return jsonify(me(user))
+
+    # ---- Notifications ----
+
+    @app.post("/api/v1/devices")
+    def api_register_device():
+        """{"token": "<hex APNs device token>", "sandbox": true for Xcode/debug builds}"""
+        if not session.get("user"):
+            return error("Sign in required.", 401)
+        user = h.current_user()
+        if not user:
+            session.clear()
+            return error("Your account is no longer available.", 401)
+        data = body()
+        token = str(data.get("token", "")).strip().lower()
+        if not token or len(token) > 200 or any(c not in "0123456789abcdef" for c in token):
+            return error("A valid device token is required.", 400)
+        devices.register(token, user["username"], user["role"],
+                         user.get("location") or h.DEFAULT_LOCATION, bool(data.get("sandbox")))
+        return jsonify({"ok": True, "notifications": user["role"] in NOTIFY_ROLES})
+
+    @app.delete("/api/v1/devices/<token>")
+    def api_unregister_device(token):
+        """Called when signing out so the phone stops getting this account's alerts."""
+        if not session.get("user"):
+            return error("Sign in required.", 401)
+        token = token.strip().lower()
+        if any(d["token"] == token and d["username"] == session["user"] for d in devices.load()):
+            devices.remove({token})
+        return jsonify({"ok": True})
 
     # ---- Issues ----
 

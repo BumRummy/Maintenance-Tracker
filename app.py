@@ -523,6 +523,14 @@ def create_app() -> Flask:
             return False, "Unable to reach email API."
 
     def _send_new_issue_notifications(issue: dict) -> None:
+        # iPhone app (APNs), set up by register_api below.
+        notify_app = app.extensions.get("notify_app_devices")
+        if notify_app:
+            try:
+                notify_app(issue)
+            except Exception:  # never let a notification problem block creating the request
+                app.logger.exception("iPhone app notification failed")
+
         private_key = app.config["VAPID_PRIVATE_KEY"]
         if not private_key:
             app.logger.warning("New-job push notification skipped: VAPID_PRIVATE_KEY is not configured.")
