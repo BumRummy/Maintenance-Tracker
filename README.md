@@ -29,6 +29,11 @@ docker compose up --build
 | `VAPID_PUBLIC_KEY` | URL-safe public VAPID key used by browsers to subscribe to job notifications | Automatically generated |
 | `VAPID_PRIVATE_KEY` | Matching private VAPID key used by the server to send job notifications | Automatically generated |
 | `VAPID_CLAIMS_EMAIL` | Contact URI included with push requests (normally `mailto:you@example.com`) | `mailto:admin@example.com` |
+| `APNS_AUTH_KEY` | Contents of the Apple Push Notifications `.p8` auth key, for HotelCraft iPhone app notifications | *(empty: app notifications off)* |
+| `APNS_KEY_ID` | Key ID of that auth key | *(empty)* |
+| `APNS_TEAM_ID` | Apple developer Team ID | *(empty)* |
+| `APNS_TOPIC` | iPhone app bundle ID | `Com.HotelCraft.Maintenance` |
+| `SUPPORT_EMAIL` | Contact address shown on the public `/support` and `/privacy` pages | *(empty)* |
 | `CONFIG_LOCATION` | Host path mounted to `CONFIG_PATH` | `./config` |
 | `PUID` | Desired user id ownership for config directory | `1000` |
 | `PGID` | Desired group id ownership for config directory | `1000` |
