@@ -174,3 +174,6 @@ button:hover { background: #e2e8f0; }
 .legal h2 { margin-top: .75rem; }
 .legal p, .legal ul { margin: 0; }
 .legal ul { padding-left: 1.2rem; display: grid; gap: .35rem; }
+
+.stacked-form { display: grid; gap: .6rem; }
+.stacked-form textarea { width: 100%; box-sizing: border-box; font: inherit; }

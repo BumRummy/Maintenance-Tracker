@@ -1,4 +1,5 @@
 import json
+from datetime import datetime, timezone
 import os
 import tempfile
 import unittest
@@ -688,6 +689,117 @@ class MaintenanceIssueTests(unittest.TestCase):
         claims = jwt.decode(token, key.public_key(), algorithms=["ES256"])
         self.assertEqual(claims["iss"], "TEAM123456")
         self.assertIs(sender.provider_token(), token)  # reused until it nears expiry
+
+    def test_quarterly_pm_checklist(self):
+        from datetime import date
+        from pm import DEFAULT_PM_ITEMS
+
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+            self.login(client, "frontdesk")
+            self.assertEqual(client.get("/api/v1/pm").status_code, 403)
+            client.post("/api/v1/logout")
+            self.login(client, "supervisor")
+            client.put("/api/v1/property", json={"rooms": ["115", "119", "210"]})
+            pm_request = app.config["STORE"].add_issue("119", "Re-caulk tub", "frontdesk", "HCK", "maintenance")
+            app.config["STORE"].add_issue("305", "Loose towel bar", "frontdesk", "HCK", "maintenance")
+            client.post("/api/v1/logout")
+            self.login(client, "maintenance")
+
+            with patch("api.datetime") as fake_datetime:
+                fake_datetime.now.return_value = datetime(2026, 11, 13, 12, tzinfo=timezone.utc)
+                fake_datetime.strptime = datetime.strptime
+                quarter = client.get("/api/v1/pm").get_json()
+                self.assertEqual((quarter["year"], quarter["quarter"], quarter["ends"]), (2026, 4, "2026-12-31"))
+                self.assertEqual(len(quarter["items"]), len(DEFAULT_PM_ITEMS))
+                rooms = {r["room"]: r for r in quarter["rooms"]}
+                # Only listed rooms get PM; 305 isn't on the list, so its request is listed separately.
+                self.assertEqual(list(rooms), ["115", "119", "210"])
+                self.assertEqual(rooms["119"]["open_requests"], 1)
+                self.assertEqual([i["room"] for i in quarter["other_requests"]], ["305"])
+                self.assertEqual(client.get("/api/v1/pm?year=2027&quarter=1").status_code, 400)
+
+                partial = client.put("/api/v1/pm/rooms/119/2026/4", json={"ratings": [{"item": "Mirror", "rating": 3}]})
+                self.assertEqual(partial.status_code, 200)
+                self.assertEqual(client.put("/api/v1/pm/rooms/119/2026/4", json={
+                    "ratings": {"Mirror": 3}, "complete": True}).status_code, 400)
+                ratings = {item: 3 for item in DEFAULT_PM_ITEMS}
+                ratings["Switches / Cover Plates"] = 2
+                done = client.put("/api/v1/pm/rooms/119/2026/4", json={
+                    "ratings": ratings, "notes": "Replaced switch plate", "complete": True,
+                    "smoke_detector_date": "2019-06-01",
+                    "close_request_ids": [pm_request["id"]],
+                }).get_json()
+                self.assertEqual(done["quarters"]["4"]["date"], "2026-11-13")
+                self.assertIn({"item": "Switches / Cover Plates", "rating": 2}, done["quarters"]["4"]["ratings"])
+                self.assertEqual(done["open_requests"], [])
+                # Paper records from earlier quarters can be entered too.
+                self.assertEqual(client.put("/api/v1/pm/rooms/119/2026/1", json={
+                    "ratings": ratings, "complete": True, "date": "2026-03-07"}).status_code, 200)
+
+                rooms = {r["room"]: r for r in client.get("/api/v1/pm").get_json()["rooms"]}
+                self.assertEqual(rooms["119"]["status"], "done")
+                self.assertEqual(rooms["115"]["status"], "due")
+                closed = next(i for i in app.config["STORE"].load_issues() if i["id"] == pm_request["id"])
+                self.assertEqual(closed["resolution"], "Done during Q4 2026 PM.")
+                detail = client.get("/api/v1/pm/rooms/119").get_json()
+                self.assertEqual(detail["quarters"]["1"]["date"], "2026-03-07")
+                self.assertIsNone(detail["quarters"]["2"])
+                # Q4 recorded the detector date; it carries over to the room.
+                self.assertEqual(detail["smoke_detector_date"], "2019-06-01")
+                self.assertEqual(client.put("/api/v1/pm/rooms/119/2026/4", json={
+                    "ratings": [], "smoke_detector_date": "June"}).status_code, 400)
+
+    def test_requests_must_name_a_listed_room_or_area_once_the_list_exists(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            client = app.test_client()
+            self.login(client, "supervisor")
+
+            def create(room):
+                return client.post("/api/v1/issues", json={"room": room, "issues": [{"description": "x", "category": "guest"}]})
+
+            # No list yet: anything goes, as before.
+            legacy = create("light outside 223")
+            self.assertEqual(legacy.status_code, 201)
+            self.assertEqual(client.put("/api/v1/property", json={"areas": ["223"], "rooms": ["223"]}).status_code, 400)
+            saved = client.put("/api/v1/property", json={
+                "rooms": ["223", "224"], "areas": ["Lobby", "pool", " Lobby ", "Exterior"],
+            }).get_json()
+            self.assertEqual(saved["areas"], ["Exterior", "Lobby", "pool"])
+
+            self.assertEqual(create("Room 223").get_json()["issues"][0]["room"], "223")
+            self.assertEqual(create("lobby").get_json()["issues"][0]["room"], "LOBBY")
+            refused = create("light outside 223")
+            self.assertEqual(refused.status_code, 400)
+            self.assertIn("isn't a room or area", refused.get_json()["error"])
+            self.assertEqual(create("2233").status_code, 400)
+
+            # An older request keeps its room when edited, or can be moved to a real place.
+            issue_id = legacy.get_json()["issues"][0]["id"]
+            kept = client.patch(f"/api/v1/issues/{issue_id}", json={
+                "room": "LIGHT OUTSIDE 223", "description": "Light out", "category": "guest"})
+            self.assertEqual(kept.status_code, 200)
+            moved = client.patch(f"/api/v1/issues/{issue_id}", json={
+                "room": "exterior", "description": "Light outside 223", "category": "guest"})
+            self.assertEqual(moved.get_json()["room"], "EXTERIOR")
+
+            # The web form follows the same rules and suggests the places.
+            with client.session_transaction() as session:
+                session["user"] = "supervisor"
+                session["role"] = "supervisor"
+            client.post("/issues", data={"room": "nowhere", "row": "1", "description_1": "x", "category_1": "guest"})
+            self.assertFalse(any(i["room"] == "NOWHERE" for i in app.config["STORE"].load_issues()))
+            page = client.get("/dashboard").data
+            self.assertIn(b'<option value="Lobby">', page)
+
+            client.post("/supervisor", data={"action": "save_places", "rooms": "101-103, 223", "areas": "Lobby\nPool\n"})
+            saved = client.get("/api/v1/property").get_json()
+            self.assertEqual((saved["rooms"], saved["areas"]), (["101", "102", "103", "223"], ["Lobby", "Pool"]))
+            self.assertIn(b"101, 102, 103, 223", client.get("/supervisor").data)
 
     def use_known_passwords(self, app):
         """Fresh deployments seed random passwords; give every account "changeme" for API tests."""

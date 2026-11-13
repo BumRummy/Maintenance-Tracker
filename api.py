@@ -14,7 +14,7 @@ labor and parts-wait times can be derived later:
 import json
 import statistics
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import threading
 from threading import Lock
@@ -24,12 +24,14 @@ import httpx
 from flask import Flask, jsonify, request, session
 
 from apns import DEAD_TOKEN_REASONS, APNsSender, Devices, new_issue_payload
+from pm import DEFAULT_PM_ITEMS, RATINGS, PMRecords, clean_items, quarter_bounds, quarter_of
 
 ALL_ROLES = ("front_desk", "supervisor", "maintenance", "admin")
 WORK_ROLES = ("maintenance", "admin")
 INVENTORY_ROLES = ("maintenance", "supervisor", "admin")
 REPORT_ROLES = ("supervisor", "admin")
 PROPERTY_ROLES = ("supervisor", "admin")
+PM_ROLES = ("maintenance", "supervisor", "admin")
 MAX_ROOMS = 3000
 MAX_ROOM_LENGTH = 12
 WORK_EVENTS = ("start", "stop", "awaiting_parts", "parts_received")
@@ -164,6 +166,53 @@ def clean_rooms(raw) -> tuple[list[str] | None, str | None]:
     return sorted(rooms, key=room_sort_key), None
 
 
+def expand_room_text(text: str) -> tuple[list[str] | None, str | None]:
+    """Typed room entry: "101-130, 201 305B" → 101…130, 201, 305B (as in the app)."""
+    rooms = []
+    for token in str(text or "").replace(";", ",").replace(",", " ").split():
+        low, dash, high = token.partition("-")
+        if dash and low.isdigit() and high.isdigit():
+            if int(low) > int(high):
+                return None, f"{token}: the first room must be lower."
+            if int(high) - int(low) >= 500:
+                return None, f"{token} is more than 500 rooms."
+            rooms += [str(n).zfill(len(low)) for n in range(int(low), int(high) + 1)]
+        else:
+            rooms.append(token)
+    return rooms, None
+
+
+MAX_AREAS = 200
+MAX_AREA_LENGTH = 40
+
+
+def place_key(text: str) -> str:
+    """How a typed room or area is compared: case, spacing and a leading "Room" don't matter."""
+    key = " ".join(str(text or "").split()).casefold()
+    return key[5:] if key.startswith("room ") else key
+
+
+def clean_areas(raw, rooms: list[str]) -> tuple[list[str] | None, str | None]:
+    """Public areas (Lobby, Pool, Exterior…): trimmed, de-duplicated, never the same as a room."""
+    if not isinstance(raw, list):
+        return None, "Areas must be a list."
+    room_keys = {place_key(r) for r in rooms}
+    areas, seen = [], set()
+    for value in raw:
+        area = " ".join(str(value or "").split())
+        if not area or place_key(area) in seen:
+            continue
+        if len(area) > MAX_AREA_LENGTH:
+            return None, f"'{area[:20]}…' is too long for an area name."
+        if place_key(area) in room_keys:
+            return None, f"'{area}' is already a room."
+        seen.add(place_key(area))
+        areas.append(area)
+    if len(areas) > MAX_AREAS:
+        return None, f"A property can have at most {MAX_AREAS} areas."
+    return sorted(areas, key=str.casefold), None
+
+
 def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     """Add /api/v1 routes. ``h`` carries helpers defined inside create_app:
     current_user, location_for_current_user, issues_for_location, issue_category,
@@ -171,6 +220,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     DEFAULT_LOCATION, ISSUE_CATEGORIES, DEFAULT_NEW_ISSUE_CATEGORY, MAX_ISSUES_PER_SUBMIT, URGENT_ROLES."""
     inventory = Inventory(store.config_dir)
     properties = Properties(store.config_dir)
+    pm_records = PMRecords(store.config_dir)
     devices = Devices(store.config_dir)
     app.config.setdefault("APNS_SENDER", APNsSender.from_env())
     if not app.config["APNS_SENDER"]:
@@ -209,6 +259,66 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             threading.Thread(target=deliver, daemon=True).start()
 
     app.extensions["notify_app_devices"] = notify_app_devices
+
+    # ---- Rooms and areas a request can be for ----
+
+    def places_for(location: str) -> tuple[list[str], list[str]]:
+        record = properties.load().get(location) or {}
+        return record.get("rooms") or [], record.get("areas") or []
+
+    def resolve_place(location: str, text: str, current: str | None = None) -> tuple[str | None, str | None]:
+        """Match what was typed to the property's rooms and areas; returns (canonical name, error).
+        Until a supervisor sets up the room list, any text is accepted as before. An issue's
+        existing room is always kept so older requests can still be edited."""
+        rooms, areas = places_for(location)
+        typed = " ".join(str(text or "").split())
+        if not typed:
+            return None, "Room is required."
+        if current and place_key(typed) == place_key(current):
+            return current, None
+        if not rooms and not areas:
+            return typed.upper(), None
+        for place in rooms + areas:
+            if place_key(place) == place_key(typed):
+                return place.upper(), None
+        return None, (f"'{typed}' isn't a room or area here. Pick one from the list, "
+                      "or ask a supervisor to add it in Admin Settings.")
+
+    app.extensions["resolve_place"] = resolve_place
+    app.extensions["places_for"] = places_for
+
+    def save_places(location: str, rooms_text: str, areas_text: str) -> str | None:
+        """The web supervisor page's Rooms & Areas form. Returns an error message, or None."""
+        typed, message = expand_room_text(rooms_text)
+        if message:
+            return message
+        rooms, message = clean_rooms(typed)
+        if message:
+            return message
+        areas, message = clean_areas(str(areas_text or "").splitlines(), rooms)
+        if message:
+            return message
+        with _property_lock:
+            everything = properties.load()
+            record = dict(everything.get(location) or {})
+            record.update(rooms=rooms, areas=areas, updated_at=_now(), updated_by=session["user"])
+            everything[location] = record
+            properties.save(everything)
+        return None
+
+    app.extensions["save_places"] = save_places
+
+    @app.context_processor
+    def inject_places():
+        """Room and area suggestions for the web forms' room field."""
+        try:
+            location = h.location_for_current_user() if session.get("user") else None
+        except Exception:
+            location = None
+        if not location:
+            return {"place_options": []}
+        rooms, areas = places_for(location)
+        return {"place_options": rooms + areas}
 
     def error(message: str, status: int):
         return jsonify({"error": message}), status
@@ -401,10 +511,12 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         if problem:
             return problem
         data = body()
-        room = str(data.get("room", "")).strip()
         entries = data.get("issues") or []
-        if not room or not isinstance(entries, list) or not entries:
+        if not str(data.get("room", "")).strip() or not isinstance(entries, list) or not entries:
             return error("Room and at least one issue are required.", 400)
+        room, message = resolve_place(location, data.get("room"))
+        if message:
+            return error(message, 400)
         if len(entries) > h.MAX_ISSUES_PER_SUBMIT:
             return error(f"Submit at most {h.MAX_ISSUES_PER_SUBMIT} issues at once.", 400)
         parsed = []
@@ -447,6 +559,10 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         date, ok = checkout_date(data, category)
         if not ok:
             return error("Select a valid checkout date.", 400)
+        existing = next((i for i in h.issues_for_location(location) if i["id"] == issue_id), None)
+        room, message = resolve_place(location, room, existing["room"] if existing else None)
+        if message:
+            return error(message, 400)
         issue = store.update_issue(issue_id, location, session["user"], room, description, category, date)
         if not issue:
             return error("Issue was not found at your assigned location.", 404)
@@ -711,6 +827,8 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "address": record.get("address") or "",
             "phone": record.get("phone") or "",
             "rooms": record.get("rooms") or [],
+            "areas": record.get("areas") or [],
+            "pm_items": record.get("pm_items") or DEFAULT_PM_ITEMS,
             "updated_at": record.get("updated_at"),
             "updated_by": record.get("updated_by"),
         }
@@ -725,7 +843,8 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
 
     @app.put("/api/v1/property")
     def api_update_property():
-        """Supervisors edit their own location: any of name, address, phone, rooms (full list)."""
+        """Supervisors edit their own location: any of name, address, phone, rooms (full list),
+        pm_items (the quarterly checklist, in order)."""
         location, problem = location_for(roles=PROPERTY_ROLES)
         if problem:
             return problem
@@ -744,11 +863,209 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
                 if message:
                     return error(message, 400)
                 record["rooms"] = rooms
+            if "areas" in data or "rooms" in data:
+                areas, message = clean_areas(data.get("areas", record.get("areas") or []), record.get("rooms") or [])
+                if message:
+                    return error(message, 400)
+                record["areas"] = areas
+            if "pm_items" in data:
+                items, message = clean_items(data["pm_items"])
+                if message:
+                    return error(message, 400)
+                record["pm_items"] = items
             record["updated_at"] = _now()
             record["updated_by"] = session["user"]
             everything[location] = record
             properties.save(everything)
         return jsonify(api_property(location, record))
+
+    # ---- Quarterly PM checklists ----
+
+    def today() -> date:
+        return datetime.now(h.TIMEZONE).date()
+
+    def pm_items_for(location: str) -> list[str]:
+        return (properties.load().get(location) or {}).get("pm_items") or DEFAULT_PM_ITEMS
+
+    def open_pm_issues(location: str) -> list[dict]:
+        return [i for i in h.issues_for_location(location)
+                if i["status"] == "open" and h.issue_category(i) == "maintenance"]
+
+    def pm_status(record: dict | None, items: list[str]) -> str:
+        if record and record.get("completed"):
+            return "done"
+        if record and any(item in (record.get("ratings") or {}) for item in items):
+            return "in_progress"
+        return "due"
+
+    def requested_quarter() -> tuple[int, int] | None:
+        """?year=&quarter= or the current quarter; None if invalid or in the future."""
+        current = quarter_of(today())
+        try:
+            year = int(request.args.get("year", current[0]))
+            quarter = int(request.args.get("quarter", current[1]))
+        except ValueError:
+            return None
+        if quarter not in (1, 2, 3, 4) or (year, quarter) > current or year < 2000:
+            return None
+        return year, quarter
+
+    def api_pm_record(record: dict | None) -> dict | None:
+        if not record:
+            return None
+        # A list rather than an object keyed by item name, so clients never rewrite the keys.
+        return {
+            "ratings": [{"item": item, "rating": rating} for item, rating in (record.get("ratings") or {}).items()],
+            "notes": record.get("notes") or "",
+            "date": record.get("date"),
+            "by": record.get("by"),
+            "completed": bool(record.get("completed")),
+            "smoke_detector_date": record.get("smoke_detector_date"),
+        }
+
+    @app.get("/api/v1/pm")
+    def api_pm_quarter():
+        """Every listed room's PM status for a quarter (default: this one), plus open PM requests
+        for areas or places not on the room list."""
+        location, problem = location_for(roles=PM_ROLES)
+        if problem:
+            return problem
+        when = requested_quarter()
+        if not when:
+            return error("Choose this quarter or an earlier one.", 400)
+        year, quarter = when
+        items = pm_items_for(location)
+        records = {r["room"]: r for r in pm_records.for_location(location)
+                   if r["year"] == year and r["quarter"] == quarter}
+        listed = (properties.load().get(location) or {}).get("rooms") or []
+        listed_keys = {place_key(r) for r in listed}
+        open_counts: dict[str, int] = {}
+        other_requests = []  # areas, and older requests typed with free text
+        for issue in open_pm_issues(location):
+            if place_key(issue["room"]) in listed_keys:
+                open_counts[issue["room"]] = open_counts.get(issue["room"], 0) + 1
+            else:
+                other_requests.append(issue)
+        # Only guest rooms on the property's room list get quarterly PM.
+        rooms = sorted(listed, key=room_sort_key)
+        start, end = quarter_bounds(year, quarter)
+        result = []
+        for room in rooms:
+            record = records.get(room)
+            result.append({
+                "room": room,
+                "status": pm_status(record, items),
+                "date": record.get("date") if record else None,
+                "by": record.get("by") if record else None,
+                "open_requests": open_counts.get(room, 0),
+            })
+        return jsonify({
+            "year": year, "quarter": quarter, "starts": start.isoformat(), "ends": end.isoformat(),
+            "items": items, "rooms": result,
+            "done": sum(1 for r in result if r["status"] == "done"),
+            "other_requests": [api_issue(i) for i in sorted(other_requests, key=lambda i: i["created_at"])],
+        })
+
+    @app.get("/api/v1/pm/rooms/<room>")
+    def api_pm_room(room):
+        """One room's checklist for a year: every quarter's ratings, plus its open PM requests."""
+        location, problem = location_for(roles=PM_ROLES)
+        if problem:
+            return problem
+        try:
+            year = int(request.args.get("year", quarter_of(today())[0]))
+        except ValueError:
+            return error("Invalid year.", 400)
+        return jsonify(pm_room_detail(location, room.strip().upper(), year))
+
+    def pm_room_detail(location: str, room: str, year: int) -> dict:
+        current_year, current_quarter = quarter_of(today())
+        quarters = {str(q): None for q in (1, 2, 3, 4)}
+        room_records = sorted(
+            (r for r in pm_records.for_location(location) if r["room"] == room),
+            key=lambda r: (r["year"], r["quarter"]),
+        )
+        for record in room_records:
+            if record["year"] == year:
+                quarters[str(record["quarter"])] = api_pm_record(record)
+        # The detector's printed date carries over until someone records a new one.
+        smoke_dates = [r["smoke_detector_date"] for r in room_records if r.get("smoke_detector_date")]
+        return {
+            "room": room, "year": year,
+            "current_quarter": current_quarter if year == current_year else None,
+            "items": pm_items_for(location),
+            "quarters": quarters,
+            "smoke_detector_date": smoke_dates[-1] if smoke_dates else None,
+            "open_requests": [api_issue(i) for i in open_pm_issues(location) if i["room"] == room],
+        }
+
+    @app.put("/api/v1/pm/rooms/<room>/<int:year>/<int:quarter>")
+    def api_save_pm(room, year, quarter):
+        """Save a room's checklist for a quarter:
+        {"ratings": [{"item", "rating": 0-3}], "notes": "", "date": "YYYY-MM-DD", "complete": bool,
+         "smoke_detector_date": "YYYY-MM-DD",  # date printed on the detector
+         "close_request_ids": [...]}  # PM requests finished during this PM
+        Completing needs every item rated; the tag date defaults to today."""
+        location, problem = location_for(roles=PM_ROLES)
+        if problem:
+            return problem
+        room = room.strip().upper()
+        if quarter not in (1, 2, 3, 4) or (year, quarter) > quarter_of(today()):
+            return error("Choose this quarter or an earlier one.", 400)
+        data = body()
+        items = pm_items_for(location)
+        raw = data.get("ratings") or {}
+        if isinstance(raw, list):  # [{"item": ..., "rating": ...}], as the app sends it
+            raw = {str(r.get("item")): r.get("rating") for r in raw if isinstance(r, dict)}
+        if not isinstance(raw, dict):
+            return error("Ratings must be a list of {item, rating}.", 400)
+        ratings = {}
+        for item, value in raw.items():
+            if item not in items:
+                continue  # an item since removed from the checklist
+            if value is None:
+                continue
+            if value not in RATINGS:
+                return error(f"'{item}' needs a rating from 0 to 3.", 400)
+            ratings[item] = value
+        complete = bool(data.get("complete"))
+        missing = [item for item in items if item not in ratings]
+        if complete and missing:
+            return error(f"Rate every item before completing ({len(missing)} left).", 400)
+        tag_date = None
+        if complete:
+            raw_date = str(data.get("date") or "").strip()
+            try:
+                tag_date = datetime.strptime(raw_date, "%Y-%m-%d").date() if raw_date else today()
+            except ValueError:
+                return error("Select a valid tag date.", 400)
+        notes = str(data.get("notes") or "").strip()[:2000]
+        smoke_date = None
+        if data.get("smoke_detector_date"):
+            try:
+                smoke_date = datetime.strptime(str(data["smoke_detector_date"]).strip(), "%Y-%m-%d").date().isoformat()
+            except ValueError:
+                return error("Select a valid smoke detector date.", 400)
+        close_ids = data.get("close_request_ids") or []
+        if not isinstance(close_ids, list):
+            return error("close_request_ids must be a list.", 400)
+        room_issue_ids = {i["id"] for i in open_pm_issues(location) if i["room"] == room}
+        if any(issue_id not in room_issue_ids for issue_id in close_ids):
+            return error("A PM request to close was not found for this room.", 404)
+        if close_ids and session.get("role") not in WORK_ROLES:
+            return error("Only maintenance can complete requests.", 403)
+
+        pm_records.upsert(location, room, year, quarter, {
+            "ratings": ratings,
+            "notes": notes,
+            "completed": complete,
+            "date": tag_date.isoformat() if tag_date else None,
+            "by": session["user"],
+            "smoke_detector_date": smoke_date,
+        })
+        for issue_id in close_ids:
+            store.close_issue(issue_id, session["user"], f"Done during Q{quarter} {year} PM.", location)
+        return jsonify(pm_room_detail(location, room, year))
 
     # ---- Users (same rules as the web supervisor page) ----
 

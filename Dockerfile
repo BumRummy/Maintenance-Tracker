@@ -5,7 +5,7 @@ WORKDIR /app
 COPY requirements.txt ./
 RUN pip install --no-cache-dir -r requirements.txt
 
-COPY app.py api.py apns.py ./
+COPY app.py api.py apns.py pm.py ./
 COPY templates ./templates
 COPY static ./static
 
