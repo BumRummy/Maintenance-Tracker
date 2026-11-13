@@ -1014,7 +1014,8 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "by": record.get("by"),
             "completed": bool(record.get("completed")),
             "smoke_detector_date": record.get("smoke_detector_date"),
-            "mattress_date": record.get("mattress_date"),
+            # The paper sheet has room for a second tag date per quarter.
+            "extra_tag_dates": record.get("extra_tag_dates") or [],
         }
 
     @app.get("/api/v1/pm")
@@ -1087,7 +1088,6 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
                 quarters[str(record["quarter"])] = api_pm_record(record)
         # The detector's printed date carries over until someone records a new one.
         smoke_dates = [r["smoke_detector_date"] for r in room_records if r.get("smoke_detector_date")]
-        mattress_dates = [r["mattress_date"] for r in room_records if r.get("mattress_date")]
         return {
             "room": room, "year": year,
             "room_type": ((properties.load().get(location) or {}).get("room_types") or {}).get(room),
@@ -1095,7 +1095,6 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "items": pm_items_for(location),
             "quarters": quarters,
             "smoke_detector_date": smoke_dates[-1] if smoke_dates else None,
-            "mattress_date": mattress_dates[-1] if mattress_dates else None,
             "open_requests": [api_issue(i) for i in open_pm_issues(location) if i["room"] == room],
         }
 
@@ -1105,7 +1104,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         {"ratings": [{"item", "rating": "ok"|"clean"|"paint"|"repair"|"replace"}], "notes": "",
          "date": "YYYY-MM-DD", "complete": bool,
          "smoke_detector_date": "YYYY-MM-DD",  # date printed on the detector
-         "mattress_date": "YYYY-MM-DD",  # date on the mattress label
+         "extra_tag_dates": ["YYYY-MM-DD"],  # more tag dates for the quarter, after "date"
          "close_request_ids": [...]}  # PM requests finished during this PM
         Completing needs every item rated; the tag date defaults to today."""
         location, problem = location_for(roles=PM_ROLES)
@@ -1141,14 +1140,21 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             except ValueError:
                 return error("Select a valid tag date.", 400)
         notes = str(data.get("notes") or "").strip()[:2000]
-        label_dates = {}
-        for field, label in (("smoke_detector_date", "smoke detector"), ("mattress_date", "mattress")):
-            label_dates[field] = None
-            if data.get(field):
-                try:
-                    label_dates[field] = datetime.strptime(str(data[field]).strip(), "%Y-%m-%d").date().isoformat()
-                except ValueError:
-                    return error(f"Select a valid {label} date.", 400)
+        smoke_date = None
+        if data.get("smoke_detector_date"):
+            try:
+                smoke_date = datetime.strptime(str(data["smoke_detector_date"]).strip(), "%Y-%m-%d").date().isoformat()
+            except ValueError:
+                return error("Select a valid smoke detector date.", 400)
+        raw_extra = data.get("extra_tag_dates") or []
+        if not isinstance(raw_extra, list) or len(raw_extra) > 3:
+            return error("Add at most 3 more tag dates.", 400)
+        extra_tag_dates = []
+        for value in raw_extra:
+            try:
+                extra_tag_dates.append(datetime.strptime(str(value).strip(), "%Y-%m-%d").date().isoformat())
+            except ValueError:
+                return error("Select a valid tag date.", 400)
         close_ids = data.get("close_request_ids") or []
         if not isinstance(close_ids, list):
             return error("close_request_ids must be a list.", 400)
@@ -1164,7 +1170,8 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "completed": complete,
             "date": tag_date.isoformat() if tag_date else None,
             "by": session["user"],
-            **label_dates,
+            "smoke_detector_date": smoke_date,
+            "extra_tag_dates": extra_tag_dates,
         })
         for issue_id in close_ids:
             store.close_issue(issue_id, session["user"], f"Done during Q{quarter} {year} PM.", location)
