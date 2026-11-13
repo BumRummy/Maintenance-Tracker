@@ -8,7 +8,10 @@
     <label class="radio-option"><input type="radio" name="category_{{ n }}" value="guest" {{ 'checked' if default_category == 'guest' }}> Guest Issues</label>
     <label class="radio-option"><input type="radio" name="category_{{ n }}" value="maintenance" {{ 'checked' if default_category == 'maintenance' }}> Preventative Maintenance</label>
   </fieldset>
-  <label class="checkbox-option" data-checkout-option {{ 'hidden' if default_category != 'guest' }}><input type="checkbox" name="do_on_checkout_{{ n }}"> On checkout</label>
+  <label class="checkbox-option" data-checkout-option {{ 'hidden' if default_category != 'guest' }}><input type="checkbox" name="do_on_checkout_{{ n }}" data-checkout> On checkout</label>
+  {% if session.get('role') in ('supervisor', 'admin') %}
+  <label class="checkbox-option" data-urgent-option {{ 'hidden' if default_category != 'maintenance' }}><input type="checkbox" name="urgent_{{ n }}" data-urgent> Urgent (sends it to Guest Issues)</label>
+  {% endif %}
   <label data-checkout-date-wrap hidden>Checkout date
     <input type="date" name="checkout_date_{{ n }}">
   </label>
