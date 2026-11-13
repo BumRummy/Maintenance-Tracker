@@ -728,6 +728,7 @@ class MaintenanceIssueTests(unittest.TestCase):
                 ratings["Switches / Cover Plates"] = 2
                 done = client.put("/api/v1/pm/rooms/119/2026/4", json={
                     "ratings": ratings, "notes": "Replaced switch plate", "complete": True,
+                    "smoke_detector_date": "2019-06-01",
                     "close_request_ids": [pm_request["id"]],
                 }).get_json()
                 self.assertEqual(done["quarters"]["4"]["date"], "2026-11-13")
@@ -745,6 +746,10 @@ class MaintenanceIssueTests(unittest.TestCase):
                 detail = client.get("/api/v1/pm/rooms/119").get_json()
                 self.assertEqual(detail["quarters"]["1"]["date"], "2026-03-07")
                 self.assertIsNone(detail["quarters"]["2"])
+                # Q4 recorded the detector date; it carries over to the room.
+                self.assertEqual(detail["smoke_detector_date"], "2019-06-01")
+                self.assertEqual(client.put("/api/v1/pm/rooms/119/2026/4", json={
+                    "ratings": [], "smoke_detector_date": "June"}).status_code, 400)
 
     def use_known_passwords(self, app):
         """Fresh deployments seed random passwords; give every account "changeme" for API tests."""

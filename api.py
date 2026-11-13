@@ -801,6 +801,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "date": record.get("date"),
             "by": record.get("by"),
             "completed": bool(record.get("completed")),
+            "smoke_detector_date": record.get("smoke_detector_date"),
         }
 
     @app.get("/api/v1/pm")
@@ -855,14 +856,21 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     def pm_room_detail(location: str, room: str, year: int) -> dict:
         current_year, current_quarter = quarter_of(today())
         quarters = {str(q): None for q in (1, 2, 3, 4)}
-        for record in pm_records.for_location(location):
-            if record["room"] == room and record["year"] == year:
+        room_records = sorted(
+            (r for r in pm_records.for_location(location) if r["room"] == room),
+            key=lambda r: (r["year"], r["quarter"]),
+        )
+        for record in room_records:
+            if record["year"] == year:
                 quarters[str(record["quarter"])] = api_pm_record(record)
+        # The detector's printed date carries over until someone records a new one.
+        smoke_dates = [r["smoke_detector_date"] for r in room_records if r.get("smoke_detector_date")]
         return {
             "room": room, "year": year,
             "current_quarter": current_quarter if year == current_year else None,
             "items": pm_items_for(location),
             "quarters": quarters,
+            "smoke_detector_date": smoke_dates[-1] if smoke_dates else None,
             "open_requests": [api_issue(i) for i in open_pm_issues(location) if i["room"] == room],
         }
 
@@ -870,6 +878,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     def api_save_pm(room, year, quarter):
         """Save a room's checklist for a quarter:
         {"ratings": [{"item", "rating": 0-3}], "notes": "", "date": "YYYY-MM-DD", "complete": bool,
+         "smoke_detector_date": "YYYY-MM-DD",  # date printed on the detector
          "close_request_ids": [...]}  # PM requests finished during this PM
         Completing needs every item rated; the tag date defaults to today."""
         location, problem = location_for(roles=PM_ROLES)
@@ -906,6 +915,12 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             except ValueError:
                 return error("Select a valid tag date.", 400)
         notes = str(data.get("notes") or "").strip()[:2000]
+        smoke_date = None
+        if data.get("smoke_detector_date"):
+            try:
+                smoke_date = datetime.strptime(str(data["smoke_detector_date"]).strip(), "%Y-%m-%d").date().isoformat()
+            except ValueError:
+                return error("Select a valid smoke detector date.", 400)
         close_ids = data.get("close_request_ids") or []
         if not isinstance(close_ids, list):
             return error("close_request_ids must be a list.", 400)
@@ -921,6 +936,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "completed": complete,
             "date": tag_date.isoformat() if tag_date else None,
             "by": session["user"],
+            "smoke_detector_date": smoke_date,
         })
         for issue_id in close_ids:
             store.close_issue(issue_id, session["user"], f"Done during Q{quarter} {year} PM.", location)
