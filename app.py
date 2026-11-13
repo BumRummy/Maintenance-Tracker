@@ -834,6 +834,12 @@ def create_app() -> Flask:
             return guard
         room = request.form.get("room", "").strip()
         default_category = DEFAULT_NEW_ISSUE_CATEGORY
+        if room:
+            location = _location_for_current_user()
+            room, message = app.extensions["resolve_place"](location, room) if location else (room, None)
+            if message:
+                flash(message, "error")
+                return redirect(url_for("dashboard"))
         # Each row is one issue for the room; its fields carry the row id as a suffix.
         # A form without row ids is treated as a single issue using the plain field names.
         row_ids = request.form.getlist("row")[:MAX_ISSUES_PER_SUBMIT] or [""]
@@ -936,6 +942,10 @@ def create_app() -> Flask:
         if not location:
             session.clear()
             return jsonify({"error": "Your account is no longer available."}), 403
+        existing = next((i for i in _issues_for_location(location) if i["id"] == issue_id), None)
+        room, message = app.extensions["resolve_place"](location, room, existing["room"] if existing else None)
+        if message:
+            return jsonify({"error": message}), 400
         issue = store.update_issue(issue_id, location, session["user"], room, description, category, checkout_date)
         if not issue:
             return jsonify({"error": "Issue was not found at your assigned location."}), 404
@@ -1179,6 +1189,13 @@ def create_app() -> Flask:
                     managed_user["force_password_change"] = True
                     store.save_settings(settings)
                     flash(f"Password reset for '{managed_user['username']}'.", "success")
+            elif action == "save_places":
+                message = app.extensions["save_places"](
+                    location, request.form.get("rooms", ""), request.form.get("areas", ""))
+                if message:
+                    flash(message, "error")
+                else:
+                    flash("Rooms and areas saved.", "success")
             elif action == "delete_user":
                 if not managed_user:
                     flash("User was not found at your location.", "error")
@@ -1196,7 +1213,9 @@ def create_app() -> Flask:
             if user.get("location") == location and user.get("role") != "admin"
         ]
         issues = _issues_for_location(location)
-        return render_template("supervisor.html", users=users, location=location, issues=issues)
+        rooms, areas = app.extensions["places_for"](location)
+        return render_template("supervisor.html", users=users, location=location, issues=issues,
+                               rooms=rooms, areas=areas)
 
     @app.get("/supervisor/report.csv")
     def supervisor_report_csv():

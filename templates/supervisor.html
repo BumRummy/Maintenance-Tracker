@@ -20,6 +20,22 @@
 </section>
 
 <section class="card">
+  <h2>Rooms &amp; Areas</h2>
+  <p class="card-copy">Requests at {{ location }} must be for a room or area listed here (once the list is set up). Guest rooms get the quarterly PM; public areas don't.</p>
+  <form method="post" class="stacked-form">
+    <input type="hidden" name="action" value="save_places">
+    <label>Guest rooms ({{ rooms | length }})
+      <textarea name="rooms" rows="4" placeholder="101-130, 201-230, 305B">{{ rooms | join(', ') }}</textarea>
+    </label>
+    <p class="card-copy">Separate rooms with commas or spaces. Use a dash for a run of rooms, like 101-130.</p>
+    <label>Public areas ({{ areas | length }}), one per line
+      <textarea name="areas" rows="5" placeholder="Lobby&#10;Pool&#10;Exterior&#10;Laundry">{{ areas | join('\n') }}</textarea>
+    </label>
+    <button type="submit" class="btn-primary">Save rooms and areas</button>
+  </form>
+</section>
+
+<section class="card">
   <h2>Add User</h2>
   <form method="post" class="inline-form">
     <input type="hidden" name="action" value="add_user">

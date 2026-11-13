@@ -12,7 +12,8 @@
     <h2 id="new-issue-title">Report an Issue</h2>
     <form method="post" action="{{ url_for('create_issue') }}" class="modal-form">
       <label>Room Number
-        <input name="room" required placeholder="e.g. 101">
+        {% include "_place_options.html" %}
+        <input name="room" list="place-options" autocomplete="off" required placeholder="e.g. 101">
       </label>
       {% include '_issue_rows.html' %}
       <div class="modal-actions">
