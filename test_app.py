@@ -737,7 +737,7 @@ class MaintenanceIssueTests(unittest.TestCase):
                 done = client.put("/api/v1/pm/rooms/119/2026/4", json={
                     "ratings": ratings, "notes": "Replaced switch plate", "complete": True,
                     "smoke_detector_date": "2019-06-01",
-                    "mattress_date": "2022-02-14",
+                    "extra_tag_dates": ["2026-11-20"],
                     "close_request_ids": [pm_request["id"]],
                 }).get_json()
                 self.assertEqual(done["quarters"]["4"]["date"], "2026-11-13")
@@ -757,7 +757,7 @@ class MaintenanceIssueTests(unittest.TestCase):
                 self.assertIsNone(detail["quarters"]["2"])
                 # Q4 recorded the detector date; it carries over to the room.
                 self.assertEqual(detail["smoke_detector_date"], "2019-06-01")
-                self.assertEqual(detail["mattress_date"], "2022-02-14")
+                self.assertEqual(detail["quarters"]["4"]["extra_tag_dates"], ["2026-11-20"])
                 self.assertEqual(client.put("/api/v1/pm/rooms/119/2026/4", json={
                     "ratings": [], "smoke_detector_date": "June"}).status_code, 400)
 
