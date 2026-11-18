@@ -64,8 +64,10 @@ docker compose up --build
   high-priority push (data-only on Android, so the app shows a full-screen alarm). The phone that
   raised it is skipped. `GET` lists active alerts (apps check it on refresh in case a push was
   missed); `…/respond` records "on my way"; `…/resolve` (the person who raised it, or a supervisor)
-  ends it and notifies everyone. `trigger: "test"` notifies nobody. History is kept in
-  `${CONFIG_PATH}/emergencies.json`.
+  ends it and notifies everyone. `trigger: "test"` notifies nobody. Every alert, drills included,
+  is kept in `${CONFIG_PATH}/emergencies.json`. Supervisors download it from
+  `GET /api/v1/emergency/log.csv`, the usage record Washington L&I can request (HB 1524, effective
+  2026-01-01).
 - Built toward Washington's hotel panic-button requirement (believed to be RCW 49.60.515).
   Each property must confirm its own compliance.
 - Room beacons (`/api/v1/beacons`): one Bluetooth beacon per room or area. Supervisors, admins and

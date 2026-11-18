@@ -1570,3 +1570,25 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
                 "battery": battery if isinstance(battery, int) and 0 <= battery <= 100 else None,
             })
         return jsonify({"matched": beacons.sightings(location, session["user"], seen)})
+
+
+    @app.get("/api/v1/emergency/log.csv")
+    def api_emergency_log():
+        """Supervisors/admins: every alert at the property (drills included) as CSV, the panic
+        button usage record Washington L&I can ask for."""
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        import csv
+        import io
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["id", "raised_at", "raised_by", "near", "trigger", "status", "responders",
+                         "first_response_at", "resolved_at", "resolved_by", "note"])
+        for a in sorted((a for a in emergencies.load() if a["location"] == location), key=lambda a: a["raised_at"]):
+            responders = a.get("responders") or []
+            writer.writerow([a["id"], a["raised_at"], a["raised_by"], a.get("near") or "", a.get("trigger"), a["status"],
+                             "; ".join(r["username"] for r in responders), responders[0]["at"] if responders else "",
+                             a.get("resolved_at") or "", a.get("resolved_by") or "", a.get("note") or ""])
+        return app.response_class(out.getvalue(), mimetype="text/csv",
+                                  headers={"Content-Disposition": f"attachment; filename=emergency-log-{location}.csv"})

@@ -22,7 +22,6 @@ from pathlib import Path
 
 TRIGGERS = ("sos_key", "button", "test")
 MAX_NEAR = 60
-KEEP_RESOLVED = 500  # history kept for review
 
 
 def _now() -> str:
@@ -41,11 +40,11 @@ class Emergencies:
             return json.load(f)
 
     def _save(self, alerts: list[dict]) -> None:
-        active = [a for a in alerts if a["status"] == "active"]
-        resolved = [a for a in alerts if a["status"] != "active"][-KEEP_RESOLVED:]
+        # Every alert is kept: since 2026-01-01 Washington employers must keep records of panic
+        # button use and show them to L&I on request (RCW 49.60.515 as amended by HB 1524).
         fd, tmp = tempfile.mkstemp(dir=str(self.path.parent), prefix=".emergencies.", suffix=".tmp")
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(resolved + active, f, indent=2)
+            json.dump(alerts, f, indent=2)
         os.replace(tmp, self.path)
 
     def active(self, location: str) -> list[dict]:

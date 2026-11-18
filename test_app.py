@@ -812,6 +812,15 @@ class MaintenanceIssueTests(unittest.TestCase):
             tech.post("/api/v1/emergency", json={"trigger": "test"})
             self.assertEqual(fcm.sent, [])
 
+            # Usage record for L&I: every alert, drills included; supervisors only.
+            self.assertEqual(desk.get("/api/v1/emergency/log.csv").status_code, 403)
+            sup = app.test_client()
+            self.login(sup, "supervisor")
+            log = sup.get("/api/v1/emergency/log.csv").get_data(as_text=True).splitlines()
+            self.assertEqual(len(log), 3)  # header + real alert + drill
+            self.assertIn("False alarm", log[1])
+            self.assertIn("frontdesk", log[1])
+
     def test_room_beacons_need_beacon_access_and_report_status(self):
         with tempfile.TemporaryDirectory() as config_path:
             app = self.make_app(config_path)
