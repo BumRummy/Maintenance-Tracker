@@ -40,6 +40,44 @@
 </section>
 
 <section class="card">
+  <h2>Live Room Status (PMS Bridge)</h2>
+  <p class="card-copy">The HotelCraft Bridge box at the hotel reads room occupancy and housekeeping status from the PMS and fills in the vacant list. It sends room numbers and statuses only, never guest details. Each box needs its own token.</p>
+  {% if new_bridge_token %}
+  <div class="flash success">
+    <p><strong>Token for {{ new_bridge_name }}</strong>. Copy it into the bridge's config file now. It won't be shown again.</p>
+    <p><code style="word-break: break-all; user-select: all;">{{ new_bridge_token }}</code></p>
+  </div>
+  {% endif %}
+  {% if bridge_tokens %}
+  <table>
+    <thead><tr><th>Name</th><th>Created</th><th>Last report</th><th>PMS link</th><th></th></tr></thead>
+    <tbody>
+      {% for t in bridge_tokens %}
+      <tr>
+        <td>{{ t.name }}</td>
+        <td>{{ t.created_at | fmtdate }}</td>
+        <td>{{ t.last_seen_at | fmtdate if t.last_seen_at else 'Never' }}</td>
+        <td>{{ t.pms_link or '-' }}</td>
+        <td>
+          <form method="post" onsubmit="return confirm('Revoke {{ t.name }}? That box stops sending room status.')">
+            <input type="hidden" name="action" value="revoke_bridge_token">
+            <input type="hidden" name="token_id" value="{{ t.id }}">
+            <button type="submit" class="btn-danger">Revoke</button>
+          </form>
+        </td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% endif %}
+  <form method="post" class="inline-form">
+    <input type="hidden" name="action" value="create_bridge_token">
+    <input name="bridge_name" placeholder="Bridge name, e.g. Front office box" maxlength="60">
+    <button type="submit" class="btn-primary">Create bridge token</button>
+  </form>
+</section>
+
+<section class="card">
   <h2>Add User</h2>
   <form method="post" class="inline-form">
     <input type="hidden" name="action" value="add_user">

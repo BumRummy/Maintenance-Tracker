@@ -55,3 +55,19 @@ docker compose up --build
   then install the site to their iOS or Android home screen and tap **Enable
   notifications**. Push notifications require the deployed site to use HTTPS;
   on iOS, web push requires iOS/iPadOS 16.4 or newer and a home-screen installation.
+
+## Live room status (HotelCraft Bridge)
+
+A HotelCraft Bridge box at the hotel holds the PMS interface (FIAS) link and posts
+room occupancy and housekeeping status here over outbound HTTPS. It sends room
+numbers and statuses only, never guest details.
+
+- Supervisors create or revoke a bridge token on the Supervisor Settings page
+  (or `POST/GET/DELETE /api/v1/bridge/tokens`). The token is shown once; only a
+  SHA-256 hash is stored in `${CONFIG_PATH}/bridge_tokens.json`.
+- The bridge calls `POST /api/v1/bridge/events` and `POST /api/v1/bridge/heartbeat`
+  with `Authorization: Bearer hcb_…`. A token writes only its own location.
+  `snapshot: true` (sent after a PMS resync) replaces that location's rooms.
+- Apps read `GET /api/v1/room-status`: per-room `occupied`/`status`, the `vacant`
+  list, and whether the bridge is `online` (heartbeat in the last 5 minutes).
+  Data is in `${CONFIG_PATH}/room_status.json`.

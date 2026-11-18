@@ -24,6 +24,8 @@ import httpx
 from flask import Flask, jsonify, request, session
 
 from apns import DEAD_TOKEN_REASONS, APNsSender, Devices, new_issue_payload
+from room_status import (MAX_EVENTS, BridgeTokens, RoomStatus, bridge_summary, clean_event,
+                         public_token)
 from pm import PMRecords, clean_items, items_from_storage, normalize_rating, quarter_bounds, quarter_of, record_ratings
 
 ALL_ROLES = ("front_desk", "supervisor", "maintenance", "admin")
@@ -279,6 +281,8 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     properties = Properties(store.config_dir)
     pm_records = PMRecords(store.config_dir)
     devices = Devices(store.config_dir)
+    bridge_tokens = BridgeTokens(store.config_dir)
+    room_status = RoomStatus(store.config_dir)
     app.config.setdefault("APNS_SENDER", APNsSender.from_env())
     if not app.config["APNS_SENDER"]:
         app.logger.warning("iPhone app notifications are off: set APNS_AUTH_KEY, APNS_KEY_ID and APNS_TEAM_ID.")
@@ -376,6 +380,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         return None
 
     app.extensions["save_places"] = save_places
+    app.extensions["bridge_tokens"] = bridge_tokens
 
     @app.context_processor
     def inject_places():
@@ -1349,3 +1354,93 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
                 ],
             },
         })
+
+    # ---- Room status from the HotelCraft Bridge (PMS interface box at the hotel) ----
+
+    def bridge_auth():
+        """Return (token record, None) for a valid bridge bearer token, or (None, error response)."""
+        record = bridge_tokens.authenticate(request.headers.get("Authorization"))
+        if not record:
+            return None, error("Invalid bridge token.", 401)
+        return record, None
+
+    @app.post("/api/v1/bridge/events")
+    def api_bridge_events():
+        """{"events": [{room, occupied?, status?, rs_code?, source, at?}], "snapshot": bool}.
+        Events apply in order. snapshot=true (after a PMS resync) replaces the whole location."""
+        record, problem = bridge_auth()
+        if problem:
+            return problem
+        data = body()
+        raw = data.get("events")
+        if not isinstance(raw, list):
+            return error("events must be a list.", 400)
+        if len(raw) > MAX_EVENTS:
+            return error(f"At most {MAX_EVENTS} events per request.", 400)
+        events = []
+        for item in raw:
+            event, message = clean_event(item, MAX_ROOM_LENGTH)
+            if message:
+                return error(message, 400)
+            events.append(event)
+        snapshot = data.get("snapshot") is True
+        applied = room_status.apply(record["location"], events, snapshot=snapshot)
+        bridge_tokens.touch(record["id"], last_resync_at=datetime.now(timezone.utc).isoformat() if snapshot else None)
+        return jsonify({"applied": applied})
+
+    @app.post("/api/v1/bridge/heartbeat")
+    def api_bridge_heartbeat():
+        """{"pms_link": "up"|"down", "version": "..."}: lets the app show whether live status is current."""
+        record, problem = bridge_auth()
+        if problem:
+            return problem
+        data = body()
+        link = data.get("pms_link")
+        if link not in ("up", "down"):
+            return error("pms_link must be up or down.", 400)
+        version = str(data.get("version") or "")[:40] or None
+        bridge_tokens.touch(record["id"], pms_link=link, version=version)
+        return jsonify({"ok": True, "location": record["location"]})
+
+    @app.get("/api/v1/room-status")
+    def api_room_status():
+        """Every role at the location: live occupancy/housekeeping per room plus the vacant list."""
+        location, problem = location_for()
+        if problem:
+            return problem
+        rooms = room_status.for_location(location)
+        rows = [{"room": room, **{k: info.get(k) for k in ("occupied", "status", "rs_code", "at", "updated_at")}}
+                for room, info in sorted(rooms.items(), key=lambda item: room_sort_key(item[0]))]
+        return jsonify({
+            "bridge": bridge_summary(bridge_tokens.for_location(location)),
+            "rooms": rows,
+            "vacant": [r["room"] for r in rows if r["occupied"] is False],
+        })
+
+    @app.get("/api/v1/bridge/tokens")
+    def api_bridge_tokens():
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        return jsonify({"tokens": [public_token(t) for t in bridge_tokens.for_location(location)]})
+
+    @app.post("/api/v1/bridge/tokens")
+    def api_create_bridge_token():
+        """{"name"}: the token is in this response only; put it in the bridge's config file."""
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        name = str(body().get("name") or "").strip()[:60] or "Bridge"
+        record, token, message = bridge_tokens.create(location, name, session["user"])
+        if message:
+            return error(message, 400)
+        return jsonify({**public_token(record), "token": token}), 201
+
+    @app.delete("/api/v1/bridge/tokens/<token_id>")
+    def api_revoke_bridge_token(token_id):
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        if not bridge_tokens.revoke(location, token_id):
+            return error("Bridge token not found.", 404)
+        return jsonify({"ok": True})

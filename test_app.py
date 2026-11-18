@@ -984,6 +984,127 @@ class MaintenanceIssueTests(unittest.TestCase):
             for key in ("response_minutes", "labor_minutes", "parts_wait_minutes", "resolution_minutes"):
                 self.assertIsNotNone(closed["metrics"][key])
 
+    def bridge_setup(self, config_path):
+        app = self.make_app(config_path)
+        self.use_known_passwords(app)
+        admin = app.test_client()
+        self.login(admin, "supervisor")
+        created = admin.post("/api/v1/bridge/tokens", json={"name": "Front office box"})
+        self.assertEqual(created.status_code, 201)
+        token = created.get_json()["token"]
+        self.assertTrue(token.startswith("hcb_"))
+        return app, admin, {"Authorization": f"Bearer {token}"}, created.get_json()["id"]
+
+    def test_bridge_events_fill_room_status_and_vacant_list(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app, admin, auth, _ = self.bridge_setup(config_path)
+            bridge = app.test_client()
+            self.assertEqual(bridge.post("/api/v1/bridge/events", json={"events": []}).status_code, 401)
+            self.assertEqual(bridge.post("/api/v1/bridge/events", json={"events": []},
+                                         headers={"Authorization": "Bearer hcb_wrong"}).status_code, 401)
+
+            sent = bridge.post("/api/v1/bridge/events", headers=auth, json={"events": [
+                {"room": "214", "occupied": True, "source": "GI", "at": "2026-11-18T15:02"},
+                {"room": "101", "occupied": False, "status": "dirty", "rs_code": "1", "source": "GO"},
+                {"room": "101", "status": "clean", "rs_code": 2, "source": "RE"},
+            ]})
+            self.assertEqual(sent.get_json(), {"applied": 3})
+
+            tech = app.test_client()
+            self.login(tech, "maintenance")
+            status = tech.get("/api/v1/room-status").get_json()
+            self.assertEqual([r["room"] for r in status["rooms"]], ["101", "214"])
+            self.assertEqual(status["rooms"][0]["status"], "clean")
+            self.assertEqual(status["rooms"][0]["rs_code"], "2")
+            self.assertEqual(status["vacant"], ["101"])
+            self.assertTrue(status["bridge"]["configured"])
+
+            # Guest check-out frees 214; snapshot after a resync replaces everything.
+            bridge.post("/api/v1/bridge/events", headers=auth,
+                        json={"events": [{"room": "214", "occupied": False, "source": "GO"}]})
+            self.assertEqual(tech.get("/api/v1/room-status").get_json()["vacant"], ["101", "214"])
+            bridge.post("/api/v1/bridge/events", headers=auth, json={"snapshot": True, "events": [
+                {"room": "305", "occupied": True, "source": "DS"},
+                {"room": "306", "status": "inspected", "source": "DS"},
+            ]})
+            status = tech.get("/api/v1/room-status").get_json()
+            self.assertEqual([r["room"] for r in status["rooms"]], ["305", "306"])
+            self.assertEqual(status["vacant"], ["306"])
+
+    def test_bridge_rejects_bad_events_and_unknown_fields_are_dropped(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app, _, auth, _ = self.bridge_setup(config_path)
+            bridge = app.test_client()
+            for bad in (
+                {"events": "nope"},
+                {"events": [{"room": "", "occupied": True, "source": "GI"}]},
+                {"events": [{"room": "214", "occupied": "yes", "source": "GI"}]},
+                {"events": [{"room": "214", "status": "sparkly", "source": "RE"}]},
+                {"events": [{"room": "214", "occupied": True, "source": "XX"}]},
+                {"events": [{"room": "214", "source": "RE"}]},
+            ):
+                self.assertEqual(bridge.post("/api/v1/bridge/events", headers=auth, json=bad).status_code, 400, bad)
+            bridge.post("/api/v1/bridge/events", headers=auth, json={"events": [
+                {"room": "214", "occupied": True, "source": "GI", "guest_name": "Should Not Be Kept"}]})
+            saved = (Path(config_path) / "room_status.json").read_text()
+            self.assertNotIn("Should Not Be Kept", saved)
+
+    def test_bridge_heartbeat_and_token_management(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app, admin, auth, token_id = self.bridge_setup(config_path)
+            bridge = app.test_client()
+            self.assertEqual(bridge.post("/api/v1/bridge/heartbeat", headers=auth, json={"pms_link": "?"}).status_code, 400)
+            beat = bridge.post("/api/v1/bridge/heartbeat", headers=auth, json={"pms_link": "up", "version": "0.1.0"})
+            self.assertEqual(beat.get_json()["location"], "HCK")
+
+            listed = admin.get("/api/v1/bridge/tokens").get_json()["tokens"]
+            self.assertEqual(listed[0]["pms_link"], "up")
+            self.assertNotIn("token", listed[0])
+            self.assertNotIn("token_hash", listed[0])
+            self.assertTrue(admin.get("/api/v1/room-status").get_json()["bridge"]["online"])
+
+            tech = app.test_client()
+            self.login(tech, "maintenance")
+            self.assertEqual(tech.get("/api/v1/bridge/tokens").status_code, 403)
+            self.assertEqual(tech.post("/api/v1/bridge/tokens", json={}).status_code, 403)
+            # A user session is not a bridge token.
+            self.assertEqual(tech.post("/api/v1/bridge/heartbeat", json={"pms_link": "up"}).status_code, 401)
+
+            self.assertEqual(admin.delete("/api/v1/bridge/tokens/nope").status_code, 404)
+            self.assertEqual(admin.delete(f"/api/v1/bridge/tokens/{token_id}").status_code, 200)
+            self.assertEqual(bridge.post("/api/v1/bridge/heartbeat", headers=auth, json={"pms_link": "up"}).status_code, 401)
+
+    def test_bridge_writes_only_its_own_location(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app, _, auth, _ = self.bridge_setup(config_path)
+            store = app.config["STORE"]
+            settings = store.load_settings()
+            settings["locations"].append("Downtown")
+            other = next(u for u in settings["users"] if u["username"] == "frontdesk")
+            other["location"] = "Downtown"
+            store.save_settings(settings)
+            app.test_client().post("/api/v1/bridge/events", headers=auth,
+                                   json={"location": "Downtown", "events": [{"room": "9", "occupied": False, "source": "GO"}]})
+            client = app.test_client()
+            self.login(client, "frontdesk")
+            self.assertEqual(client.get("/api/v1/room-status").get_json()["rooms"], [])
+
+    def test_supervisor_page_creates_and_revokes_bridge_tokens(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            client = app.test_client()
+            with client.session_transaction() as session:
+                session["user"] = "supervisor"
+                session["role"] = "supervisor"
+            page = client.post("/supervisor", data={"action": "create_bridge_token", "bridge_name": "Back office"})
+            self.assertEqual(page.status_code, 200)
+            self.assertIn(b"hcb_", page.data)
+            tokens = app.extensions["bridge_tokens"].for_location("HCK")
+            self.assertEqual(tokens[0]["name"], "Back office")
+            self.assertNotIn(b"hcb_", client.get("/supervisor").data)  # shown once
+            client.post("/supervisor", data={"action": "revoke_bridge_token", "token_id": tokens[0]["id"]})
+            self.assertEqual(app.extensions["bridge_tokens"].for_location("HCK"), [])
+
     def test_work_metrics_use_event_times(self):
         from api import work_metrics
 
