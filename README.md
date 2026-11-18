@@ -56,3 +56,19 @@ docker compose up --build
   then install the site to their iOS or Android home screen and tap **Enable
   notifications**. Push notifications require the deployed site to use HTTPS;
   on iOS, web push requires iOS/iPadOS 16.4 or newer and a home-screen installation.
+
+## Staff emergency alerts and room beacons
+
+- `POST /api/v1/emergency` (any staff, from the phone's SOS key pressed 3 times) raises an alert.
+  Every signed-in phone at the property gets it, plus supervisors and admins wherever they are, as a
+  high-priority push (data-only on Android, so the app shows a full-screen alarm). The phone that
+  raised it is skipped. `GET` lists active alerts (apps check it on refresh in case a push was
+  missed); `…/respond` records "on my way"; `…/resolve` (the person who raised it, or a supervisor)
+  ends it and notifies everyone. `trigger: "test"` notifies nobody. History is kept in
+  `${CONFIG_PATH}/emergencies.json`.
+- Built toward Washington's hotel panic-button requirement (believed to be RCW 49.60.515).
+  Each property must confirm its own compliance.
+- Room beacons (`/api/v1/beacons`): one Bluetooth beacon per room or area. Supervisors, admins and
+  users granted `beacon_access` (`PATCH /api/v1/users/<name>`) register, edit and monitor them.
+  Status is `ok`, `low_battery` (≤ 20 %), `missing` (not heard in 24 h) or `never`. Phones report
+  what they hear to `/api/v1/beacons/sightings`; an alert sent with `beacon_id` says "near 214".
