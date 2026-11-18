@@ -24,6 +24,7 @@ import httpx
 from flask import Flask, jsonify, request, session
 
 from apns import DEAD_TOKEN_REASONS, APNsSender, Devices, new_issue_payload
+from fcm import DEAD_TOKEN_ERRORS, FCMSender, new_issue_message
 from pm import PMRecords, clean_items, items_from_storage, normalize_rating, quarter_bounds, quarter_of, record_ratings
 
 ALL_ROLES = ("front_desk", "supervisor", "maintenance", "admin")
@@ -283,31 +284,52 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     if not app.config["APNS_SENDER"]:
         app.logger.warning("iPhone app notifications are off: set APNS_AUTH_KEY, APNS_KEY_ID and APNS_TEAM_ID.")
 
+    app.config.setdefault("FCM_SENDER", FCMSender.from_env())
+    if not app.config["FCM_SENDER"]:
+        app.logger.warning("Android app notifications are off: set FCM_SERVICE_ACCOUNT.")
+
     def notify_app_devices(issue: dict) -> None:
-        """Alert signed-in iPhones at the issue's location. Runs in the background so
-        creating a request never waits on Apple."""
-        sender = app.config.get("APNS_SENDER")
-        if not sender:
+        """Alert signed-in phones at the issue's location: iPhones through APNs, Android through FCM.
+        Runs in the background so creating a request never waits on Apple or Google."""
+        apns_sender = app.config.get("APNS_SENDER")
+        fcm_sender = app.config.get("FCM_SENDER")
+        if not (apns_sender or fcm_sender):
             return
         location = issue.get("location", h.DEFAULT_LOCATION)
         targets = [d for d in devices.load() if d.get("role") in NOTIFY_ROLES and d.get("location") == location]
         if not targets:
             return
-        payload = new_issue_payload(issue)
 
         def deliver():
             dead = set()
-            with httpx.Client(http2=True, timeout=10) as client:
-                for device in targets:
-                    try:
-                        status, reason = sender.send(client, device["token"], payload, bool(device.get("sandbox")))
-                    except httpx.HTTPError as exc:
-                        app.logger.warning("APNs request failed: %s", exc)
-                        continue
-                    if status == 410 or reason in DEAD_TOKEN_REASONS:
-                        dead.add(device["token"])
-                    elif status != 200:
-                        app.logger.warning("APNs rejected a notification: %s %s", status, reason)
+            iphones = [d for d in targets if d.get("platform", "ios") == "ios"]
+            androids = [d for d in targets if d.get("platform") == "android"]
+            if apns_sender and iphones:
+                payload = new_issue_payload(issue)
+                with httpx.Client(http2=True, timeout=10) as client:
+                    for device in iphones:
+                        try:
+                            status, reason = apns_sender.send(client, device["token"], payload, bool(device.get("sandbox")))
+                        except httpx.HTTPError as exc:
+                            app.logger.warning("APNs request failed: %s", exc)
+                            continue
+                        if status == 410 or reason in DEAD_TOKEN_REASONS:
+                            dead.add(device["token"])
+                        elif status != 200:
+                            app.logger.warning("APNs rejected a notification: %s %s", status, reason)
+            if fcm_sender and androids:
+                message = new_issue_message(issue)
+                with httpx.Client(timeout=10) as client:
+                    for device in androids:
+                        try:
+                            status, code = fcm_sender.send(client, device["token"], message)
+                        except httpx.HTTPError as exc:
+                            app.logger.warning("FCM request failed: %s", exc)
+                            continue
+                        if status == 404 or code in DEAD_TOKEN_ERRORS:
+                            dead.add(device["token"])
+                        elif status != 200:
+                            app.logger.warning("FCM rejected a notification: %s %s", status, code)
             devices.remove(dead)
 
         if app.config.get("APNS_SYNC"):
@@ -527,7 +549,8 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
 
     @app.post("/api/v1/devices")
     def api_register_device():
-        """{"token": "<hex APNs device token>", "sandbox": true for Xcode/debug builds}"""
+        """{"token": "<APNs hex token or FCM registration token>", "platform": "ios" (default) or "android",
+        "sandbox": true for Xcode/debug iPhone builds}"""
         if not session.get("user"):
             return error("Sign in required.", 401)
         user = h.current_user()
@@ -535,11 +558,19 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             session.clear()
             return error("Your account is no longer available.", 401)
         data = body()
-        token = str(data.get("token", "")).strip().lower()
-        if not token or len(token) > 200 or any(c not in "0123456789abcdef" for c in token):
+        platform = data.get("platform", "ios")
+        if platform not in ("ios", "android"):
+            return error("platform must be ios or android.", 400)
+        token = str(data.get("token", "")).strip()
+        if platform == "ios":
+            token = token.lower()
+            valid = 0 < len(token) <= 200 and all(c in "0123456789abcdef" for c in token)
+        else:  # FCM tokens are case-sensitive: letters, digits, ":", "-", "_"
+            valid = 0 < len(token) <= 512 and all(c.isascii() and (c.isalnum() or c in ":-_") for c in token)
+        if not valid:
             return error("A valid device token is required.", 400)
         devices.register(token, user["username"], user["role"],
-                         user.get("location") or h.DEFAULT_LOCATION, bool(data.get("sandbox")))
+                         user.get("location") or h.DEFAULT_LOCATION, bool(data.get("sandbox")), platform)
         return jsonify({"ok": True, "notifications": user["role"] in NOTIFY_ROLES})
 
     @app.delete("/api/v1/devices/<token>")
@@ -547,9 +578,11 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         """Called when signing out so the phone stops getting this account's alerts."""
         if not session.get("user"):
             return error("Sign in required.", 401)
-        token = token.strip().lower()
-        if any(d["token"] == token and d["username"] == session["user"] for d in devices.load()):
-            devices.remove({token})
+        token = token.strip()
+        # iPhone tokens are stored lowercase; Android (FCM) tokens exactly as given.
+        mine = {d["token"] for d in devices.load()
+                if d["username"] == session["user"] and d["token"] in (token, token.lower())}
+        devices.remove(mine)
         return jsonify({"ok": True})
 
     # ---- Issues ----

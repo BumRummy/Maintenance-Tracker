@@ -81,8 +81,9 @@ class APNsSender:
 
 
 class Devices:
-    """iPhones registered for notifications, in devices.json: one entry per device token,
-    tagged with whoever is signed in on it."""
+    """Phones registered for notifications, in devices.json: one entry per device token,
+    tagged with whoever is signed in on it. ``platform`` is "ios" (APNs) or "android" (FCM);
+    entries saved before Android existed have none and are iPhones."""
 
     def __init__(self, config_dir: str):
         self.path = Path(config_dir) / "devices.json"
@@ -101,13 +102,14 @@ class Devices:
         with self.path.open("w", encoding="utf-8") as f:
             json.dump(devices, f, indent=2)
 
-    def register(self, token: str, username: str, role: str, location: str, sandbox: bool) -> None:
+    def register(self, token: str, username: str, role: str, location: str, sandbox: bool,
+                 platform: str = "ios") -> None:
         with self.lock:
             # A phone that changes hands keeps its token; the latest sign-in owns it.
             devices = [d for d in self.load() if d["token"] != token]
             devices.append({
                 "token": token, "username": username, "role": role, "location": location,
-                "sandbox": sandbox, "updated_at": datetime.now(timezone.utc).isoformat(),
+                "sandbox": sandbox, "platform": platform, "updated_at": datetime.now(timezone.utc).isoformat(),
             })
             self._save(devices)
 

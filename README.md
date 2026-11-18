@@ -33,6 +33,7 @@ docker compose up --build
 | `APNS_KEY_ID` | Key ID of that auth key | *(empty)* |
 | `APNS_TEAM_ID` | Apple developer Team ID | *(empty)* |
 | `APNS_TOPIC` | iPhone app bundle ID | `Com.HotelCraft.Maintenance` |
+| `FCM_SERVICE_ACCOUNT` | Whole JSON of a Firebase service account key (Firebase console → Project settings → Service accounts), for HotelCraft Android app notifications | *(empty: Android notifications off)* |
 | `SUPPORT_EMAIL` | Contact address shown on the public `/support` and `/privacy` pages | *(empty)* |
 | `CONFIG_LOCATION` | Host path mounted to `CONFIG_PATH` | `./config` |
 | `PUID` | Desired user id ownership for config directory | `1000` |

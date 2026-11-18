@@ -673,6 +673,91 @@ class MaintenanceIssueTests(unittest.TestCase):
             client.delete("/api/v1/devices/AB12")
             self.assertNotIn("ab12", [d["token"] for d in Devices(config_path).load()])
 
+    def test_new_requests_notify_android_phones_through_fcm(self):
+        class FakeFCM:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, client, token, message):
+                self.sent.append((token, message))
+                return (404, "UNREGISTERED") if token == "gone:Token" else (200, "")
+
+        class FakeAPNs:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, client, token, payload, sandbox):
+                self.sent.append(token)
+                return 200, ""
+
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            fcm, apns = FakeFCM(), FakeAPNs()
+            app.config.update(FCM_SENDER=fcm, APNS_SENDER=apns, APNS_SYNC=True)
+            self.use_known_passwords(app)
+            client = app.test_client()
+            self.login(client, "maintenance")
+            self.assertEqual(client.post("/api/v1/devices", json={"token": "x", "platform": "web"}).status_code, 400)
+            self.assertEqual(client.post("/api/v1/devices", json={"token": "bad token!", "platform": "android"}).status_code, 400)
+            ok = client.post("/api/v1/devices", json={"token": "fA1:APA91b-x_Y", "platform": "android"})
+            self.assertTrue(ok.get_json()["notifications"])
+            client.post("/api/v1/devices", json={"token": "ab12"})  # an iPhone, no platform given
+            from apns import Devices
+            Devices(config_path).register("gone:Token", "maintenance", "maintenance", "HCK", False, "android")
+
+            client.post("/api/v1/issues", json={"room": "214", "issues": [{"description": "Leak", "category": "guest"}]})
+
+            self.assertEqual(sorted(t for t, _ in fcm.sent), ["fA1:APA91b-x_Y", "gone:Token"])  # case kept
+            self.assertEqual(apns.sent, ["ab12"])
+            message = fcm.sent[0][1]
+            self.assertEqual(message["notification"]["title"], "New job · Room 214")
+            self.assertEqual(message["android"]["notification"]["channel_id"], "new_jobs")
+            self.assertEqual(message["data"]["room"], "214")
+            tokens = [d["token"] for d in Devices(config_path).load()]
+            self.assertNotIn("gone:Token", tokens)
+
+            client.delete("/api/v1/devices/fA1:APA91b-x_Y")
+            self.assertEqual([d["token"] for d in Devices(config_path).load()], ["ab12"])
+
+    def test_fcm_sender_signs_assertion_and_reads_error_codes(self):
+        import httpx
+        import jwt
+        from cryptography.hazmat.primitives import serialization
+        from cryptography.hazmat.primitives.asymmetric import rsa
+        from fcm import FCMSender
+
+        key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+        pem = key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8,
+                                serialization.NoEncryption()).decode()
+        sender = FCMSender({"project_id": "hc-test", "client_email": "push@hc-test.iam.gserviceaccount.com",
+                            "private_key": pem})
+        claims = jwt.decode(sender.assertion(), key.public_key(), algorithms=["RS256"],
+                            audience="https://oauth2.googleapis.com/token")
+        self.assertEqual(claims["scope"], "https://www.googleapis.com/auth/firebase.messaging")
+
+        calls = []
+
+        def handler(request):
+            calls.append(str(request.url))
+            if "oauth2" in str(request.url):
+                return httpx.Response(200, json={"access_token": "ya29.test", "expires_in": 3600})
+            if request.headers["authorization"] != "Bearer ya29.test":
+                return httpx.Response(401)
+            body = json.loads(request.content)
+            if body["message"]["token"] == "old":
+                return httpx.Response(404, json={"error": {"status": "NOT_FOUND", "details": [
+                    {"@type": "type.googleapis.com/google.firebase.fcm.v1.FcmError", "errorCode": "UNREGISTERED"}]}})
+            return httpx.Response(200, json={"name": "projects/hc-test/messages/1"})
+
+        with httpx.Client(transport=httpx.MockTransport(handler)) as client:
+            self.assertEqual(sender.send(client, "good", {"notification": {"title": "t"}}), (200, ""))
+            self.assertEqual(sender.send(client, "old", {}), (404, "UNREGISTERED"))
+        self.assertEqual(sum("oauth2" in c for c in calls), 1)  # access token reused
+        self.assertIn("/v1/projects/hc-test/messages:send", calls[1])
+
+        with patch.dict(os.environ, {"FCM_SERVICE_ACCOUNT": "not json"}):
+            self.assertIsNone(FCMSender.from_env())
+
     def test_apns_provider_token_is_signed_with_the_auth_key(self):
         import jwt
         from cryptography.hazmat.primitives import serialization
