@@ -25,6 +25,8 @@ from flask import Flask, jsonify, request, session
 
 from apns import DEAD_TOKEN_REASONS, APNsSender, Devices, new_issue_payload
 from fcm import DEAD_TOKEN_ERRORS, FCMSender, new_issue_message
+from beacons import MAX_SIGHTINGS, Beacons, beacon_status, clean_id as clean_beacon_id
+from emergency import TRIGGERS, MAX_NEAR, Emergencies, apns_payload as emergency_apns, fcm_message as emergency_fcm
 from pm import PMRecords, clean_items, items_from_storage, normalize_rating, quarter_bounds, quarter_of, record_ratings
 
 ALL_ROLES = ("front_desk", "supervisor", "maintenance", "admin")
@@ -288,28 +290,23 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     if not app.config["FCM_SENDER"]:
         app.logger.warning("Android app notifications are off: set FCM_SERVICE_ACCOUNT.")
 
-    def notify_app_devices(issue: dict) -> None:
-        """Alert signed-in phones at the issue's location: iPhones through APNs, Android through FCM.
-        Runs in the background so creating a request never waits on Apple or Google."""
+    def push(targets: list[dict], apns_message: dict | None, fcm_msg: dict | None) -> None:
+        """Send to each phone through its own service (iPhone: APNs, Android: FCM) in the background,
+        so the request that triggered it never waits on Apple or Google. Dead tokens are dropped."""
         apns_sender = app.config.get("APNS_SENDER")
         fcm_sender = app.config.get("FCM_SENDER")
-        if not (apns_sender or fcm_sender):
-            return
-        location = issue.get("location", h.DEFAULT_LOCATION)
-        targets = [d for d in devices.load() if d.get("role") in NOTIFY_ROLES and d.get("location") == location]
-        if not targets:
+        iphones = [d for d in targets if d.get("platform", "ios") == "ios"] if apns_sender and apns_message else []
+        androids = [d for d in targets if d.get("platform") == "android"] if fcm_sender and fcm_msg else []
+        if not (iphones or androids):
             return
 
         def deliver():
             dead = set()
-            iphones = [d for d in targets if d.get("platform", "ios") == "ios"]
-            androids = [d for d in targets if d.get("platform") == "android"]
-            if apns_sender and iphones:
-                payload = new_issue_payload(issue)
+            if iphones:
                 with httpx.Client(http2=True, timeout=10) as client:
                     for device in iphones:
                         try:
-                            status, reason = apns_sender.send(client, device["token"], payload, bool(device.get("sandbox")))
+                            status, reason = apns_sender.send(client, device["token"], apns_message, bool(device.get("sandbox")))
                         except httpx.HTTPError as exc:
                             app.logger.warning("APNs request failed: %s", exc)
                             continue
@@ -317,12 +314,11 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
                             dead.add(device["token"])
                         elif status != 200:
                             app.logger.warning("APNs rejected a notification: %s %s", status, reason)
-            if fcm_sender and androids:
-                message = new_issue_message(issue)
+            if androids:
                 with httpx.Client(timeout=10) as client:
                     for device in androids:
                         try:
-                            status, code = fcm_sender.send(client, device["token"], message)
+                            status, code = fcm_sender.send(client, device["token"], fcm_msg)
                         except httpx.HTTPError as exc:
                             app.logger.warning("FCM request failed: %s", exc)
                             continue
@@ -336,6 +332,12 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             deliver()
         else:
             threading.Thread(target=deliver, daemon=True).start()
+
+    def notify_app_devices(issue: dict) -> None:
+        """New-job alert to maintenance/admin phones at the issue's location."""
+        location = issue.get("location", h.DEFAULT_LOCATION)
+        targets = [d for d in devices.load() if d.get("role") in NOTIFY_ROLES and d.get("location") == location]
+        push(targets, new_issue_payload(issue), new_issue_message(issue))
 
     app.extensions["notify_app_devices"] = notify_app_devices
 
@@ -442,12 +444,17 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "metrics": work_metrics(issue),
         }
 
+    def has_beacon_access(user: dict) -> bool:
+        """Supervisors and admins always; others when a supervisor grants it."""
+        return user.get("role") in ("supervisor", "admin") or bool(user.get("beacon_access"))
+
     def me(user: dict) -> dict:
         return {
             "username": user["username"],
             "role": user["role"],
             "location": user.get("location"),
             "must_change_password": bool(user.get("force_password_change")),
+            "beacon_access": has_beacon_access(user),
         }
 
     def location_for(roles=ALL_ROLES):
@@ -1220,6 +1227,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             "email": user.get("email") or "",
             "role": user["role"],
             "must_change_password": bool(user.get("force_password_change")),
+            "beacon_access": has_beacon_access(user),
         }
 
     def managed_users(settings: dict, location: str) -> list[dict]:
@@ -1306,6 +1314,10 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
                 return error("Password must be at least 8 characters.", 400)
             user["password"] = h.hash_password(password)
             user["force_password_change"] = True
+        if "beacon_access" in data:
+            if not isinstance(data["beacon_access"], bool):
+                return error("beacon_access must be true or false.", 400)
+            user["beacon_access"] = data["beacon_access"]
         store.save_settings(settings)
         return jsonify(api_user(user))
 
@@ -1382,3 +1394,203 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
                 ],
             },
         })
+
+
+    # ---- Staff emergency (panic) alerts ----
+
+    emergencies = Emergencies(store.config_dir)
+    beacons = Beacons(store.config_dir)
+
+    def emergency_targets(location: str, exclude: str | None = None) -> list[dict]:
+        """Every signed-in phone at the property, whatever the role, plus supervisors and admins
+        signed in anywhere (on call off-site). Not the phone of the person who raised it."""
+        return [d for d in devices.load()
+                if (d.get("location") == location or d.get("role") in ("supervisor", "admin"))
+                and (exclude is None or d.get("username") != exclude)]
+
+    def api_emergency(alert: dict) -> dict:
+        return {k: alert.get(k) for k in ("id", "raised_by", "raised_at", "near", "trigger", "status",
+                                         "responders", "resolved_by", "resolved_at", "note")}
+
+    @app.post("/api/v1/emergency")
+    def api_raise_emergency():
+        """{"trigger": "sos_key"|"button"|"test", "near": "Room 214"?}. Any signed-in staff member."""
+        location, problem = location_for()
+        if problem:
+            return problem
+        data = body()
+        trigger = data.get("trigger", "sos_key")
+        if trigger not in TRIGGERS:
+            return error("Unknown trigger.", 400)
+        near = str(data.get("near") or "").strip()[:MAX_NEAR] or None
+        if not near and data.get("beacon_id"):  # the strongest room beacon the phone heard
+            place = beacons.place_for(location, data["beacon_id"])
+            if place:  # every room has its own beacon, so name the room exactly: "Room 214" (areas as named: "Lobby")
+                rooms, _ = places_for(location)
+                near = f"Room {place}" if place in rooms else place
+        alert, created = emergencies.raise_alert(location, session["user"], near, trigger)
+        app.logger.warning("EMERGENCY %s at %s by %s near %s", "raised" if created else "repeated",
+                           location, session["user"], near or "?")
+        if trigger != "test":
+            push(emergency_targets(location, exclude=session["user"]),
+                 emergency_apns(alert, "raised"), emergency_fcm(alert, "raised"))
+        return jsonify(api_emergency(alert)), 201 if created else 200
+
+    @app.get("/api/v1/emergency")
+    def api_active_emergencies():
+        """Active alerts at the user's property; apps check this on every refresh in case a push was missed."""
+        location, problem = location_for()
+        if problem:
+            return problem
+        return jsonify({"active": [api_emergency(a) for a in emergencies.active(location)]})
+
+    @app.post("/api/v1/emergency/<alert_id>/respond")
+    def api_respond_emergency(alert_id):
+        """"On my way": shows the person who raised it (and everyone else) who is coming."""
+        location, problem = location_for()
+        if problem:
+            return problem
+
+        def change(alert):
+            if alert["status"] == "active" and not any(r["username"] == session["user"] for r in alert["responders"]):
+                alert["responders"].append({"username": session["user"], "at": datetime.now(timezone.utc).isoformat()})
+
+        alert = emergencies.update(location, alert_id, change)
+        if alert is None:
+            return error("Alert not found.", 404)
+        return jsonify(api_emergency(alert))
+
+    @app.post("/api/v1/emergency/<alert_id>/resolve")
+    def api_resolve_emergency(alert_id):
+        """{"note": "..."}: the person who raised it, a supervisor or an admin."""
+        location, problem = location_for()
+        if problem:
+            return problem
+        current = next((a for a in emergencies.load() if a["id"] == alert_id and a["location"] == location), None)
+        if current is None:
+            return error("Alert not found.", 404)
+        if session["user"] != current["raised_by"] and session.get("role") not in ("supervisor", "admin"):
+            return error("Only the person who raised it or a supervisor can resolve it.", 403)
+        note = str(body().get("note") or "").strip()[:500] or None
+
+        def change(alert):
+            if alert["status"] == "active":
+                alert.update(status="resolved", resolved_by=session["user"],
+                             resolved_at=datetime.now(timezone.utc).isoformat(), note=note)
+
+        alert = emergencies.update(location, alert_id, change)
+        if alert["trigger"] != "test":
+            push(emergency_targets(location), emergency_apns(alert, "resolved"), emergency_fcm(alert, "resolved"))
+        return jsonify(api_emergency(alert))
+
+
+    # ---- Room location beacons ----
+
+    def beacon_location():
+        """(location, None) for a signed-in user with beacon access, else (None, error)."""
+        location, problem = location_for()
+        if problem:
+            return None, problem
+        if not has_beacon_access(h.current_user() or {}):
+            return None, error("You don't have beacon access. A supervisor can grant it.", 403)
+        return location, None
+
+    def api_beacon(beacon_id: str, record: dict) -> dict:
+        return {"id": beacon_id, "status": beacon_status(record),
+                **{k: record.get(k) for k in ("place", "label", "registered_by", "registered_at",
+                                              "last_seen_at", "last_seen_by", "rssi", "battery")}}
+
+    @app.get("/api/v1/beacons")
+    def api_beacons():
+        """Beacon access: every beacon with its status, plus rooms that don't have one yet."""
+        location, problem = beacon_location()
+        if problem:
+            return problem
+        records = beacons.for_location(location)
+        rows = sorted((api_beacon(bid, r) for bid, r in records.items()), key=lambda b: room_sort_key(b["place"] or ""))
+        rooms, _ = places_for(location)
+        covered = {r["place"] for r in rows}
+        return jsonify({"beacons": rows, "rooms_without_beacon": [r for r in rooms if r not in covered]})
+
+    @app.get("/api/v1/beacons/map")
+    def api_beacon_map():
+        """Any staff member: beacon id → place, so the phone can name where it is without asking."""
+        location, problem = location_for()
+        if problem:
+            return problem
+        return jsonify({"beacons": [{"id": bid, "place": r.get("place")} for bid, r in beacons.for_location(location).items()]})
+
+    @app.put("/api/v1/beacons/<beacon_id>")
+    def api_put_beacon(beacon_id):
+        """Register or edit: {"place": "214" or an area, "label": optional note}."""
+        location, problem = beacon_location()
+        if problem:
+            return problem
+        beacon_id = clean_beacon_id(beacon_id)
+        if not beacon_id:
+            return error("That isn't a valid beacon ID.", 400)
+        data = body()
+        place, message = resolve_place(location, str(data.get("place") or ""))
+        if message:
+            return error(message, 400)
+        if not place:
+            return error("Pick the room or area this beacon is in.", 400)
+        label = str(data.get("label") or "").strip()[:60] or None
+        record, message = beacons.put(location, beacon_id, place, label, session["user"])
+        if message:
+            return error(message, 400)
+        return jsonify(api_beacon(beacon_id, record))
+
+    @app.delete("/api/v1/beacons/<beacon_id>")
+    def api_delete_beacon(beacon_id):
+        location, problem = beacon_location()
+        if problem:
+            return problem
+        if not beacons.remove(location, clean_beacon_id(beacon_id) or ""):
+            return error("Beacon not found.", 404)
+        return jsonify({"ok": True})
+
+    @app.post("/api/v1/beacons/sightings")
+    def api_beacon_sightings():
+        """Any staff phone: {"sightings": [{"id", "rssi", "battery"?}]} for beacons it just heard."""
+        location, problem = location_for()
+        if problem:
+            return problem
+        raw = body().get("sightings")
+        if not isinstance(raw, list) or len(raw) > MAX_SIGHTINGS:
+            return error(f"sightings must be a list of at most {MAX_SIGHTINGS}.", 400)
+        seen = []
+        for item in raw:
+            beacon_id = clean_beacon_id((item or {}).get("id"))
+            if not beacon_id:
+                continue
+            rssi = item.get("rssi")
+            battery = item.get("battery")
+            seen.append({
+                "id": beacon_id,
+                "rssi": rssi if isinstance(rssi, int) and -130 <= rssi <= 0 else None,
+                "battery": battery if isinstance(battery, int) and 0 <= battery <= 100 else None,
+            })
+        return jsonify({"matched": beacons.sightings(location, session["user"], seen)})
+
+
+    @app.get("/api/v1/emergency/log.csv")
+    def api_emergency_log():
+        """Supervisors/admins: every alert at the property (drills included) as CSV, the panic
+        button usage record Washington L&I can ask for."""
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        import csv
+        import io
+        out = io.StringIO()
+        writer = csv.writer(out)
+        writer.writerow(["id", "raised_at", "raised_by", "near", "trigger", "status", "responders",
+                         "first_response_at", "resolved_at", "resolved_by", "note"])
+        for a in sorted((a for a in emergencies.load() if a["location"] == location), key=lambda a: a["raised_at"]):
+            responders = a.get("responders") or []
+            writer.writerow([a["id"], a["raised_at"], a["raised_by"], a.get("near") or "", a.get("trigger"), a["status"],
+                             "; ".join(r["username"] for r in responders), responders[0]["at"] if responders else "",
+                             a.get("resolved_at") or "", a.get("resolved_by") or "", a.get("note") or ""])
+        return app.response_class(out.getvalue(), mimetype="text/csv",
+                                  headers={"Content-Disposition": f"attachment; filename=emergency-log-{location}.csv"})

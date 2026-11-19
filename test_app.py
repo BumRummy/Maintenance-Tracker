@@ -758,6 +758,125 @@ class MaintenanceIssueTests(unittest.TestCase):
         with patch.dict(os.environ, {"FCM_SERVICE_ACCOUNT": "not json"}):
             self.assertIsNone(FCMSender.from_env())
 
+    def test_emergency_alert_reaches_every_phone_and_can_be_answered_and_resolved(self):
+        class FakeFCM:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, client, token, message):
+                self.sent.append((token, message))
+                return 200, ""
+
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            fcm = FakeFCM()
+            app.config.update(FCM_SENDER=fcm, APNS_SENDER=None, APNS_SYNC=True)
+            self.use_known_passwords(app)
+            from apns import Devices
+            reg = Devices(config_path).register
+            reg("fd:1", "frontdesk", "front_desk", "HCK", False, "android")      # front desk does get emergencies
+            reg("mt:1", "maintenance", "maintenance", "HCK", False, "android")   # the person raising it
+            reg("sv:1", "boss", "supervisor", "Elsewhere", False, "android")     # supervisor on call off-site
+            reg("ot:1", "other", "maintenance", "Elsewhere", False, "android")   # other property: no
+
+            tech = app.test_client()
+            self.login(tech, "maintenance")
+            self.assertEqual(tech.post("/api/v1/emergency", json={"trigger": "nope"}).status_code, 400)
+            raised = tech.post("/api/v1/emergency", json={"near": "Room 214"})
+            self.assertEqual(raised.status_code, 201)
+            alert = raised.get_json()
+            self.assertEqual(sorted(t for t, _ in fcm.sent), ["fd:1", "sv:1"])
+            data = fcm.sent[0][1]["data"]
+            self.assertEqual((data["type"], data["emergency"], data["near"]), ("emergency", "raised", "Room 214"))
+            self.assertNotIn("notification", fcm.sent[0][1])  # data-only: the app shows the alarm
+
+            # Pressing again doesn't open a second alert.
+            again = tech.post("/api/v1/emergency", json={"near": "Room 216"})
+            self.assertEqual((again.status_code, again.get_json()["id"], again.get_json()["near"]), (200, alert["id"], "Room 216"))
+
+            desk = app.test_client()
+            self.login(desk, "frontdesk")
+            self.assertEqual([a["id"] for a in desk.get("/api/v1/emergency").get_json()["active"]], [alert["id"]])
+            responded = desk.post(f"/api/v1/emergency/{alert['id']}/respond").get_json()
+            self.assertEqual([r["username"] for r in responded["responders"]], ["frontdesk"])
+            self.assertEqual(desk.post(f"/api/v1/emergency/{alert['id']}/resolve").status_code, 403)
+
+            fcm.sent.clear()
+            done = tech.post(f"/api/v1/emergency/{alert['id']}/resolve", json={"note": "False alarm"}).get_json()
+            self.assertEqual((done["status"], done["resolved_by"], done["note"]), ("resolved", "maintenance", "False alarm"))
+            self.assertTrue(all(m["data"]["emergency"] == "resolved" for _, m in fcm.sent))
+            self.assertEqual(desk.get("/api/v1/emergency").get_json()["active"], [])
+
+            # A test alert notifies nobody.
+            fcm.sent.clear()
+            tech.post("/api/v1/emergency", json={"trigger": "test"})
+            self.assertEqual(fcm.sent, [])
+
+            # Usage record for L&I: every alert, drills included; supervisors only.
+            self.assertEqual(desk.get("/api/v1/emergency/log.csv").status_code, 403)
+            sup = app.test_client()
+            self.login(sup, "supervisor")
+            log = sup.get("/api/v1/emergency/log.csv").get_data(as_text=True).splitlines()
+            self.assertEqual(len(log), 3)  # header + real alert + drill
+            self.assertIn("False alarm", log[1])
+            self.assertIn("frontdesk", log[1])
+
+    def test_room_beacons_need_beacon_access_and_report_status(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            sup = app.test_client()
+            self.login(sup, "supervisor")
+            sup.put("/api/v1/property", json={"rooms": ["101", "214"], "areas": ["Lobby"]})
+            tech = app.test_client()
+            self.login(tech, "maintenance")
+
+            self.assertFalse(tech.get("/api/v1/me").get_json()["beacon_access"])
+            self.assertEqual(tech.get("/api/v1/beacons").status_code, 403)
+            self.assertEqual(tech.put("/api/v1/beacons/ABC", json={"place": "214"}).status_code, 403)
+            self.assertTrue(sup.get("/api/v1/me").get_json()["beacon_access"])
+            self.assertEqual(sup.patch("/api/v1/users/maintenance", json={"beacon_access": "yes"}).status_code, 400)
+            granted = sup.patch("/api/v1/users/maintenance", json={"beacon_access": True}).get_json()
+            self.assertTrue(granted["beacon_access"])
+
+            uuid_id = "f7826da6-4fa2-4e98-8024-bc5b71e0893e:1:214"
+            self.assertEqual(tech.put("/api/v1/beacons/bad id!", json={"place": "214"}).status_code, 400)
+            self.assertEqual(tech.put(f"/api/v1/beacons/{uuid_id}", json={"place": "999"}).status_code, 400)
+            made = tech.put(f"/api/v1/beacons/{uuid_id}", json={"place": "room 214", "label": "behind TV"}).get_json()
+            self.assertEqual((made["id"], made["place"], made["status"]), (uuid_id.upper(), "214", "never"))
+            clash = tech.put("/api/v1/beacons/AA:BB:CC:DD:EE:FF", json={"place": "214"})
+            self.assertEqual(clash.status_code, 400)  # one beacon per room
+            tech.put("/api/v1/beacons/AA:BB:CC:DD:EE:FF", json={"place": "Lobby"})
+
+            listing = tech.get("/api/v1/beacons").get_json()
+            self.assertEqual([b["place"] for b in listing["beacons"]], ["214", "LOBBY"])
+            self.assertEqual(listing["rooms_without_beacon"], ["101"])
+
+            # Any phone (front desk included) reports what it hears; unknown beacons are ignored.
+            desk = app.test_client()
+            self.login(desk, "frontdesk")
+            heard = desk.post("/api/v1/beacons/sightings", json={"sightings": [
+                {"id": uuid_id.lower(), "rssi": -61, "battery": 15}, {"id": "11:22", "rssi": -80}]}).get_json()
+            self.assertEqual(heard["matched"], 1)
+            b214 = next(b for b in tech.get("/api/v1/beacons").get_json()["beacons"] if b["place"] == "214")
+            self.assertEqual((b214["status"], b214["battery"], b214["last_seen_by"], b214["rssi"]),
+                             ("low_battery", 15, "frontdesk", -61))
+            self.assertEqual(len(desk.get("/api/v1/beacons/map").get_json()["beacons"]), 2)
+
+            # The emergency alert names the room from the beacon the phone heard.
+            alert = desk.post("/api/v1/emergency", json={"trigger": "test", "beacon_id": uuid_id}).get_json()
+            self.assertEqual(alert["near"], "Room 214")
+
+            self.assertEqual(tech.delete("/api/v1/beacons/AA:BB:CC:DD:EE:FF").status_code, 200)
+            self.assertEqual(tech.delete("/api/v1/beacons/AA:BB:CC:DD:EE:FF").status_code, 404)
+
+    def test_beacon_status_goes_missing_after_a_day(self):
+        from datetime import timedelta
+        from beacons import beacon_status
+        now = datetime.now(timezone.utc)
+        self.assertEqual(beacon_status({"last_seen_at": (now - timedelta(hours=2)).isoformat(), "battery": 80}, now), "ok")
+        self.assertEqual(beacon_status({"last_seen_at": (now - timedelta(hours=30)).isoformat()}, now), "missing")
+
     def test_apns_provider_token_is_signed_with_the_auth_key(self):
         import jwt
         from cryptography.hazmat.primitives import serialization
