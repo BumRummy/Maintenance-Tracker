@@ -74,3 +74,11 @@ docker compose up --build
   users granted `beacon_access` (`PATCH /api/v1/users/<name>`) register, edit and monitor them.
   Status is `ok`, `low_battery` (≤ 20 %), `missing` (not heard in 24 h) or `never`. Phones report
   what they hear to `/api/v1/beacons/sightings`; an alert sent with `beacon_id` says "near 214".
+- Kiosk phones (`/api/v1/kiosk/…`): shared work phones get their own key at setup, so the SOS key
+  works with nobody signed in. A supervisor creates an enrollment code (`POST /kiosk/codes`, shown
+  once) that goes in the zero-touch/QR setup; the phone trades it for a device key
+  (`POST /kiosk/enroll`). A supervisor signed in on a phone can also enroll it directly
+  (`POST /kiosk/devices`). A device key can only raise an alert (named for the phone) and read the
+  beacon map. `GET /kiosk/devices` lists enrolled phones (the property's panic-button device record);
+  `PATCH` renames or revokes a lost one; `DELETE /kiosk/codes/<id>` stops new enrollments.
+  Keys and codes are stored hashed in `${CONFIG_PATH}/kiosk_devices.json`.
