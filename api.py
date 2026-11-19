@@ -26,6 +26,7 @@ from flask import Flask, jsonify, request, session
 from apns import DEAD_TOKEN_REASONS, APNsSender, Devices, new_issue_payload
 from fcm import DEAD_TOKEN_ERRORS, FCMSender, new_issue_message
 from beacons import MAX_SIGHTINGS, Beacons, beacon_status, clean_id as clean_beacon_id
+from kiosk_devices import KioskDevices, clean_info, clean_name, public_code, public_device
 from emergency import TRIGGERS, MAX_NEAR, Emergencies, apns_payload as emergency_apns, fcm_message as emergency_fcm
 from pm import PMRecords, clean_items, items_from_storage, normalize_rating, quarter_bounds, quarter_of, record_ratings
 
@@ -1400,6 +1401,13 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
 
     emergencies = Emergencies(store.config_dir)
     beacons = Beacons(store.config_dir)
+    kiosk = KioskDevices(store.config_dir)
+    app.extensions["kiosk_devices"] = kiosk
+
+    def request_device() -> dict | None:
+        """The enrolled kiosk phone named by an "Authorization: Bearer hck_…" header, if any."""
+        auth = request.headers.get("Authorization", "")
+        return kiosk.authenticate(auth[7:].strip()) if auth.startswith("Bearer ") else None
 
     def emergency_targets(location: str, exclude: str | None = None) -> list[dict]:
         """Every signed-in phone at the property, whatever the role, plus supervisors and admins
@@ -1414,10 +1422,18 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
 
     @app.post("/api/v1/emergency")
     def api_raise_emergency():
-        """{"trigger": "sos_key"|"button"|"test", "near": "Room 214"?}. Any signed-in staff member."""
-        location, problem = location_for()
-        if problem:
-            return problem
+        """{"trigger": "sos_key"|"button"|"test", "near": "Room 214"?}. Any signed-in staff member, or an
+        enrolled kiosk phone with nobody signed in (device key), named by the phone's name."""
+        device = request_device()
+        if session.get("user"):
+            location, problem = location_for()
+            if problem:
+                return problem
+            who = session["user"]
+        elif device:
+            location, who = device["location"], device["name"]
+        else:
+            return error("Sign in required.", 401)
         data = body()
         trigger = data.get("trigger", "sos_key")
         if trigger not in TRIGGERS:
@@ -1428,11 +1444,11 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             if place:  # every room has its own beacon, so name the room exactly: "Room 214" (areas as named: "Lobby")
                 rooms, _ = places_for(location)
                 near = f"Room {place}" if place in rooms else place
-        alert, created = emergencies.raise_alert(location, session["user"], near, trigger)
+        alert, created = emergencies.raise_alert(location, who, near, trigger, device["id"] if device else None)
         app.logger.warning("EMERGENCY %s at %s by %s near %s", "raised" if created else "repeated",
-                           location, session["user"], near or "?")
+                           location, who, near or "?")
         if trigger != "test":
-            push(emergency_targets(location, exclude=session["user"]),
+            push(emergency_targets(location, exclude=who),
                  emergency_apns(alert, "raised"), emergency_fcm(alert, "raised"))
         return jsonify(api_emergency(alert)), 201 if created else 200
 
@@ -1514,10 +1530,15 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
 
     @app.get("/api/v1/beacons/map")
     def api_beacon_map():
-        """Any staff member: beacon id → place, so the phone can name where it is without asking."""
-        location, problem = location_for()
-        if problem:
-            return problem
+        """Any staff member (or enrolled kiosk phone): beacon id → place, so the phone can tell which
+        beacons count for its location."""
+        device = None if session.get("user") else request_device()
+        if device:
+            location = device["location"]
+        else:
+            location, problem = location_for()
+            if problem:
+                return problem
         return jsonify({"beacons": [{"id": bid, "place": r.get("place")} for bid, r in beacons.for_location(location).items()]})
 
     @app.put("/api/v1/beacons/<beacon_id>")
@@ -1586,11 +1607,92 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         out = io.StringIO()
         writer = csv.writer(out)
         writer.writerow(["id", "raised_at", "raised_by", "near", "trigger", "status", "responders",
-                         "first_response_at", "resolved_at", "resolved_by", "note"])
+                         "first_response_at", "resolved_at", "resolved_by", "note", "device"])
+        device_names = {d["id"]: d["name"] for d in kiosk.devices(location)}
         for a in sorted((a for a in emergencies.load() if a["location"] == location), key=lambda a: a["raised_at"]):
             responders = a.get("responders") or []
             writer.writerow([a["id"], a["raised_at"], a["raised_by"], a.get("near") or "", a.get("trigger"), a["status"],
                              "; ".join(r["username"] for r in responders), responders[0]["at"] if responders else "",
-                             a.get("resolved_at") or "", a.get("resolved_by") or "", a.get("note") or ""])
+                             a.get("resolved_at") or "", a.get("resolved_by") or "", a.get("note") or "",
+                             device_names.get(a.get("device_id"), "")])
         return app.response_class(out.getvalue(), mimetype="text/csv",
                                   headers={"Content-Disposition": f"attachment; filename=emergency-log-{location}.csv"})
+
+    # ---- Kiosk phones (shared work phones with their own SOS key to the server) ----
+
+    def enrolled(device: dict, key: str) -> dict:
+        return {"device_id": device["id"], "device_key": key, "name": device["name"], "location": device["location"]}
+
+    @app.post("/api/v1/kiosk/enroll")
+    def api_kiosk_enroll():
+        """During zero-touch/QR setup: {"code", "name"?, "serial"?, "model"?} → the phone's own key (once)."""
+        data = body()
+        result = kiosk.enroll_with_code(str(data.get("code") or ""), clean_name(data.get("name")),
+                                        clean_info(data.get("serial")), clean_info(data.get("model")))
+        if result is None:
+            app.logger.warning("Kiosk enrollment refused (bad or revoked code)")
+            return error("That enrollment code isn't valid.", 403)
+        device, key = result
+        app.logger.info("Kiosk phone %s enrolled at %s", device["id"], device["location"])
+        return jsonify(enrolled(device, key)), 201
+
+    @app.post("/api/v1/kiosk/devices")
+    def api_kiosk_enroll_direct():
+        """Supervisor signed in on the phone itself: {"name", "serial"?, "model"?} → its key (once)."""
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        data = body()
+        name = clean_name(data.get("name"))
+        if not name:
+            return error("Give the phone a name, for example 'Housekeeping 2'.", 400)
+        device, key = kiosk.enroll_direct(location, name, session["user"],
+                                          clean_info(data.get("serial")), clean_info(data.get("model")))
+        return jsonify(enrolled(device, key)), 201
+
+    @app.get("/api/v1/kiosk/devices")
+    def api_kiosk_devices():
+        """Supervisors: every enrolled phone (revoked ones too) and the enrollment codes."""
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        return jsonify({"devices": [public_device(d) for d in kiosk.devices(location)],
+                        "codes": [public_code(c) for c in kiosk.codes(location)]})
+
+    @app.patch("/api/v1/kiosk/devices/<device_id>")
+    def api_kiosk_update_device(device_id):
+        """{"name"?, "revoked": true?}. Revoke a lost or retired phone; it can't be undone."""
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        data = body()
+        device = kiosk.update(location, device_id, clean_name(data.get("name")), revoke=data.get("revoked") is True)
+        if device is None:
+            return error("Phone not found.", 404)
+        return jsonify(public_device(device))
+
+    @app.get("/api/v1/kiosk/device")
+    def api_kiosk_whoami():
+        """The phone checks its own key still works (shown on the kiosk sign-in page)."""
+        device = request_device()
+        if device is None:
+            return error("This phone isn't enrolled, or its key was revoked.", 401)
+        return jsonify(public_device(device) | {"location": device["location"]})
+
+    @app.post("/api/v1/kiosk/codes")
+    def api_kiosk_create_code():
+        """Supervisors: {"label"?} → a reusable enrollment code for setup configurations (shown once)."""
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        record, code = kiosk.create_code(location, clean_name(body().get("label")), session["user"])
+        return jsonify(public_code(record) | {"code": code}), 201
+
+    @app.delete("/api/v1/kiosk/codes/<code_id>")
+    def api_kiosk_revoke_code(code_id):
+        location, problem = location_for(roles=PROPERTY_ROLES)
+        if problem:
+            return problem
+        if not kiosk.revoke_code(location, code_id):
+            return error("Code not found.", 404)
+        return jsonify({"ok": True})

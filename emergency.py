@@ -50,7 +50,8 @@ class Emergencies:
     def active(self, location: str) -> list[dict]:
         return [a for a in self.load() if a["location"] == location and a["status"] == "active"]
 
-    def raise_alert(self, location: str, username: str, near: str | None, trigger: str) -> tuple[dict, bool]:
+    def raise_alert(self, location: str, username: str, near: str | None, trigger: str,
+                    device_id: str | None = None) -> tuple[dict, bool]:
         """Returns (alert, created). Pressing again while your alert is active doesn't
         start a second one; it updates where you are."""
         with self.lock:
@@ -66,7 +67,7 @@ class Emergencies:
             alert = {
                 "id": uuid.uuid4().hex[:12], "location": location, "raised_by": username, "raised_at": _now(),
                 "near": near, "trigger": trigger, "status": "active", "responders": [],
-                "resolved_by": None, "resolved_at": None, "note": None,
+                "resolved_by": None, "resolved_at": None, "note": None, "device_id": device_id,
             }
             alerts.append(alert)
             self._save(alerts)
@@ -84,7 +85,7 @@ class Emergencies:
 
 
 def alert_title(alert: dict) -> str:
-    who = alert["raised_by"].capitalize()
+    who = alert["raised_by"][:1].upper() + alert["raised_by"][1:]  # "maria" → "Maria"; device names as written
     return f"🚨 EMERGENCY · {who}" + (f" · {alert['near']}" if alert.get("near") else "")
 
 
@@ -93,7 +94,7 @@ def apns_payload(alert: dict, kind: str) -> dict:
         alert_text = {"title": alert_title(alert), "body": "Staff member needs help now. Open HotelCraft to respond."}
         sound, level = "default", "time-sensitive"
     else:
-        alert_text = {"title": "Emergency resolved", "body": f"{alert['raised_by'].capitalize()}'s alert was resolved."}
+        alert_text = {"title": "Emergency resolved", "body": f"{alert['raised_by'][:1].upper() + alert['raised_by'][1:]}'s alert was resolved."}
         sound, level = "default", "active"
     return {
         "aps": {"alert": alert_text, "sound": sound, "interruption-level": level,
