@@ -865,7 +865,7 @@ class MaintenanceIssueTests(unittest.TestCase):
 
             # The emergency alert names the room from the beacon the phone heard.
             alert = desk.post("/api/v1/emergency", json={"trigger": "test", "beacon_id": uuid_id}).get_json()
-            self.assertEqual(alert["near"], "near 214")
+            self.assertEqual(alert["near"], "Room 214")
 
             self.assertEqual(tech.delete("/api/v1/beacons/AA:BB:CC:DD:EE:FF").status_code, 200)
             self.assertEqual(tech.delete("/api/v1/beacons/AA:BB:CC:DD:EE:FF").status_code, 404)
