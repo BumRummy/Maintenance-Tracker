@@ -1441,7 +1441,9 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         near = str(data.get("near") or "").strip()[:MAX_NEAR] or None
         if not near and data.get("beacon_id"):  # the strongest room beacon the phone heard
             place = beacons.place_for(location, data["beacon_id"])
-            near = f"near {place}" if place else None
+            if place:  # every room has its own beacon, so name the room exactly: "Room 214" (areas as named: "Lobby")
+                rooms, _ = places_for(location)
+                near = f"Room {place}" if place in rooms else place
         alert, created = emergencies.raise_alert(location, who, near, trigger, device["id"] if device else None)
         app.logger.warning("EMERGENCY %s at %s by %s near %s", "raised" if created else "repeated",
                            location, who, near or "?")

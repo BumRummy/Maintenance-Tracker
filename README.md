@@ -73,7 +73,8 @@ docker compose up --build
 - Room beacons (`/api/v1/beacons`): one Bluetooth beacon per room or area. Supervisors, admins and
   users granted `beacon_access` (`PATCH /api/v1/users/<name>`) register, edit and monitor them.
   Status is `ok`, `low_battery` (≤ 20 %), `missing` (not heard in 24 h) or `never`. Phones report
-  what they hear to `/api/v1/beacons/sightings`; an alert sent with `beacon_id` says "near 214".
+  what they hear to `/api/v1/beacons/sightings`; an alert sent with `beacon_id` names the
+  exact room ("Room 214") or area ("Lobby") of the strongest beacon the phone heard.
 - Kiosk phones (`/api/v1/kiosk/…`): shared work phones get their own key at setup, so the SOS key
   works with nobody signed in. A supervisor creates an enrollment code (`POST /kiosk/codes`, shown
   once) that goes in the zero-touch/QR setup; the phone trades it for a device key

@@ -2,7 +2,7 @@
 
 Phones scanning in the background report which beacons they hear. That keeps each beacon's
 status current (last heard, signal, battery) and lets an emergency alert say where the person
-is ("near Room 214"). People with beacon access register, edit and monitor beacons.
+is ("Room 214"). People with beacon access register, edit and monitor beacons.
 
 Stored in beacons.json: {location: {beacon_id: {place, label, registered_by, registered_at,
 last_seen_at, last_seen_by, rssi, battery}}}. Beacon IDs are what the phone reads from the
