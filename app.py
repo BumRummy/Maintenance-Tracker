@@ -1197,6 +1197,19 @@ def create_app() -> Flask:
                     flash(message, "error")
                 else:
                     flash("Rooms and areas saved.", "success")
+            elif action == "create_bridge_token":
+                name = request.form.get("bridge_name", "").strip()[:60] or "Bridge"
+                record, token, message = app.extensions["bridge_tokens"].create(location, name, session["user"])
+                if message:
+                    flash(message, "error")
+                else:
+                    # Shown on this response only (never stored in the flash cookie or on disk).
+                    return render_supervisor(location, settings, new_bridge_token=token, new_bridge_name=name)
+            elif action == "revoke_bridge_token":
+                if app.extensions["bridge_tokens"].revoke(location, request.form.get("token_id", "")):
+                    flash("Bridge token revoked. That box can no longer send room status.", "success")
+                else:
+                    flash("Bridge token was not found.", "error")
             elif action == "delete_user":
                 if not managed_user:
                     flash("User was not found at your location.", "error")
@@ -1208,6 +1221,9 @@ def create_app() -> Flask:
                     flash(f"User '{managed_user['username']}' deleted.", "success")
             return redirect(url_for("supervisor"))
 
+        return render_supervisor(location, settings)
+
+    def render_supervisor(location, settings, **extra):
         users = [
             user
             for user in settings["users"]
@@ -1216,7 +1232,8 @@ def create_app() -> Flask:
         issues = _issues_for_location(location)
         rooms, areas = app.extensions["places_for"](location)
         return render_template("supervisor.html", users=users, location=location, issues=issues,
-                               rooms=rooms, areas=areas, room_type_lines=app.extensions["room_type_lines"](location))
+                               rooms=rooms, areas=areas, room_type_lines=app.extensions["room_type_lines"](location),
+                               bridge_tokens=app.extensions["bridge_tokens"].for_location(location), **extra)
 
     @app.get("/supervisor/report.csv")
     def supervisor_report_csv():
