@@ -1031,6 +1031,68 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertEqual([r["room"] for r in status["rooms"]], ["305", "306"])
             self.assertEqual(status["vacant"], ["306"])
 
+    def test_two_way_room_status_goes_to_the_bridge_and_back(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app, admin, auth, _ = self.bridge_setup(config_path)
+            bridge = app.test_client()
+            bridge.post("/api/v1/bridge/events", headers=auth, json={"events": [
+                {"room": "214", "occupied": False, "status": "dirty", "rs_code": "1", "source": "GO"}]})
+            desk = app.test_client()
+            self.login(desk, "frontdesk")
+            tech = app.test_client()
+            self.login(tech, "maintenance")
+
+            self.assertEqual(desk.post("/api/v1/room-status/214", json={"status": "sparkly"}).status_code, 400)
+            self.assertEqual(desk.post("/api/v1/room-status/214", json={"status": "out_of_order"}).status_code, 403)
+            self.assertEqual(desk.post("/api/v1/room-status/bad room", json={"status": "clean"}).status_code, 400)
+            first = desk.post("/api/v1/room-status/214", json={"status": "inspected"})
+            self.assertEqual(first.status_code, 202)
+            # A newer change for the same room replaces the one still waiting.
+            change = desk.post("/api/v1/room-status/214", json={"status": "clean"}).get_json()["change"]
+            ooo = tech.post("/api/v1/room-status/305", json={"status": "out_of_order"}).get_json()["change"]
+            row = tech.get("/api/v1/room-status").get_json()["rooms"][0]
+            self.assertEqual((row["status"], row["change"]["status"], row["change"]["state"]), ("dirty", "clean", "pending"))
+
+            # Only the bridge can read the queue.
+            self.assertEqual(tech.get("/api/v1/bridge/commands").status_code, 401)
+            pending = bridge.get("/api/v1/bridge/commands", headers=auth).get_json()["commands"]
+            self.assertEqual([(c["room"], c["status"]) for c in pending], [("214", "clean"), ("305", "out_of_order")])
+            done = bridge.post("/api/v1/bridge/commands/ack", headers=auth, json={"results": [
+                {"id": change["id"], "ok": True, "rs_code": "3"},
+                {"id": ooo["id"], "ok": False, "error": "no RS code configured for 'out_of_order'"},
+            ]}).get_json()
+            self.assertEqual(done, {"sent": 1})
+            self.assertEqual(bridge.get("/api/v1/bridge/commands", headers=auth).get_json()["commands"], [])
+            row = tech.get("/api/v1/room-status").get_json()["rooms"][0]
+            self.assertEqual((row["status"], row["rs_code"], row["change"]), ("clean", "3", None))
+            commands = json.loads((Path(config_path) / "room_commands.json").read_text())["HCK"]
+            self.assertEqual([c["state"] for c in commands], ["replaced", "sent", "failed"])
+
+            # PMS link down: the bridge says retry, so the change keeps waiting.
+            again = desk.post("/api/v1/room-status/214", json={"status": "dirty"}).get_json()["change"]
+            bridge.post("/api/v1/bridge/commands/ack", headers=auth,
+                        json={"results": [{"id": again["id"], "ok": False, "retry": True}]})
+            self.assertEqual(len(bridge.get("/api/v1/bridge/commands", headers=auth).get_json()["commands"]), 1)
+
+    def test_two_way_needs_a_bridge_and_old_changes_expire(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            desk = app.test_client()
+            self.login(desk, "frontdesk")
+            self.assertEqual(desk.post("/api/v1/room-status/214", json={"status": "clean"}).status_code, 409)
+
+            app, admin, auth, _ = self.bridge_setup(config_path)
+            self.login(desk, "frontdesk")
+            change = desk.post("/api/v1/room-status/214", json={"status": "clean"}).get_json()["change"]
+            path = Path(config_path) / "room_commands.json"
+            data = json.loads(path.read_text())
+            data["HCK"][0]["requested_at"] = "2026-01-01T00:00:00+00:00"
+            path.write_text(json.dumps(data))
+            self.assertEqual(app.test_client().get("/api/v1/bridge/commands", headers=auth).get_json()["commands"], [])
+            self.assertEqual(json.loads(path.read_text())["HCK"][0]["state"], "expired")
+            self.assertEqual(change["state"], "pending")
+
     def test_bridge_rejects_bad_events_and_unknown_fields_are_dropped(self):
         with tempfile.TemporaryDirectory() as config_path:
             app, _, auth, _ = self.bridge_setup(config_path)

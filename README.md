@@ -71,3 +71,12 @@ numbers and statuses only, never guest details.
 - Apps read `GET /api/v1/room-status`: per-room `occupied`/`status`, the `vacant`
   list, and whether the bridge is `online` (heartbeat in the last 5 minutes).
   Data is in `${CONFIG_PATH}/room_status.json`.
+- Two-way (room status only): `POST /api/v1/room-status/<room>` with `{"status"}`
+  queues a change for the PMS. Any role may set `dirty`/`clean`/`inspected`/`pickup`;
+  `out_of_order`/`out_of_service` need maintenance, supervisor or admin. The bridge
+  polls `GET /api/v1/bridge/commands`, sends each as an RE record (like a room phone
+  code) and reports with `POST /api/v1/bridge/commands/ack`; accepted changes update
+  room status. Each room row in `GET /api/v1/room-status` has `change` (waiting,
+  failed or expired, with who asked) until it goes through. A newer change for the
+  same room replaces one still waiting; changes not picked up in 30 minutes expire.
+  Stored in `${CONFIG_PATH}/room_commands.json`.

@@ -10,6 +10,11 @@ status and when it changed.
 Files (next to the other data files):
     bridge_tokens.json   [{id, location, name, token_hash, created_*, last_seen_at, ...}]
     room_status.json     {location: {room: {occupied, status, rs_code, at, updated_at, source}}}
+    room_commands.json   {location: [{id, room, status, state, requested_by, ...}]}
+
+Two-way: a status set in HotelCraft (housekeeping marks a room clean, maintenance takes it
+out of order) waits in room_commands.json until the bridge picks it up, sends it to the PMS
+as an RE record (the same thing a room phone does) and reports back.
 """
 
 import hashlib
@@ -26,7 +31,12 @@ from threading import Lock
 TOKEN_PREFIX = "hcb_"
 # Housekeeping statuses the bridge may report, after it maps the hotel's RS codes.
 STATUSES = ("dirty", "clean", "inspected", "pickup", "out_of_order", "out_of_service")
-SOURCES = ("GI", "GO", "GC", "RE", "DS", "manual")
+SOURCES = ("GI", "GO", "GC", "RE", "DS", "manual", "HC")
+# Who may set which status from the app (sent to the PMS through the bridge).
+HOUSEKEEPING_STATUSES = ("dirty", "clean", "inspected", "pickup")
+OUT_OF_ORDER_STATUSES = ("out_of_order", "out_of_service")
+COMMAND_EXPIRES = timedelta(minutes=30)  # not picked up by then (bridge or PMS down): give up
+MAX_COMMANDS_KEPT = 300
 MAX_EVENTS = 3000
 MAX_TOKENS_PER_LOCATION = 5
 BRIDGE_ONLINE_WINDOW = timedelta(minutes=5)
@@ -211,3 +221,78 @@ class RoomStatus:
             everything[location] = rooms
             self.file.save(everything)
         return len(events)
+
+
+class RoomCommands:
+    """Status changes made in HotelCraft, waiting for the bridge to send them to the PMS.
+
+    States: pending → sent (PMS link accepted it) | failed (e.g. no RS code for that status)
+    | expired (never picked up) | replaced (a newer change for the same room came first)."""
+
+    def __init__(self, config_dir: str):
+        self.file = _JSONFile(Path(config_dir) / "room_commands.json", dict)
+
+    @staticmethod
+    def _expire(commands: list[dict]) -> bool:
+        changed = False
+        cutoff = datetime.now(timezone.utc) - COMMAND_EXPIRES
+        for c in commands:
+            if c["state"] == "pending" and datetime.fromisoformat(c["requested_at"]) < cutoff:
+                c.update(state="expired", finished_at=_now())
+                changed = True
+        return changed
+
+    def request(self, location: str, room: str, status: str, username: str) -> dict:
+        command = {"id": uuid.uuid4().hex[:12], "room": room, "status": status, "state": "pending",
+                   "requested_by": username, "requested_at": _now(), "finished_at": None,
+                   "rs_code": None, "error": None}
+        with _lock:
+            everything = self.file.load()
+            commands = everything.get(location, [])
+            for c in commands:
+                if c["room"] == room and c["state"] == "pending":
+                    c.update(state="replaced", finished_at=_now())
+            commands.append(command)
+            everything[location] = commands[-MAX_COMMANDS_KEPT:]
+            self.file.save(everything)
+        return command
+
+    def pending(self, location: str) -> list[dict]:
+        with _lock:
+            everything = self.file.load()
+            commands = everything.get(location, [])
+            if self._expire(commands):
+                self.file.save(everything)
+        now = datetime.now(timezone.utc)
+        return [{"id": c["id"], "room": c["room"], "status": c["status"],
+                 "age_seconds": int((now - datetime.fromisoformat(c["requested_at"])).total_seconds())}
+                for c in commands if c["state"] == "pending"]
+
+    def ack(self, location: str, results: list) -> list[dict]:
+        """Record what the bridge did; returns the commands the PMS accepted."""
+        sent = []
+        with _lock:
+            everything = self.file.load()
+            by_id = {c["id"]: c for c in everything.get(location, [])}
+            for result in results:
+                if not isinstance(result, dict):
+                    continue
+                c = by_id.get(str(result.get("id")))
+                if not c or c["state"] != "pending":
+                    continue
+                if result.get("ok") is True:
+                    code = result.get("rs_code")
+                    c.update(state="sent", finished_at=_now(),
+                             rs_code=str(code)[:4] if isinstance(code, (str, int)) else None)
+                    sent.append(c)
+                elif not result.get("retry"):
+                    c.update(state="failed", finished_at=_now(), error=str(result.get("error") or "")[:120] or None)
+            self.file.save(everything)
+        return sent
+
+    def latest_by_room(self, location: str) -> dict[str, dict]:
+        """The newest change per room that is still waiting or didn't go through."""
+        latest = {}
+        for c in self.file.load().get(location, []):
+            latest[c["room"]] = c
+        return {room: c for room, c in latest.items() if c["state"] in ("pending", "failed", "expired")}

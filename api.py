@@ -24,8 +24,8 @@ import httpx
 from flask import Flask, jsonify, request, session
 
 from apns import DEAD_TOKEN_REASONS, APNsSender, Devices, new_issue_payload
-from room_status import (MAX_EVENTS, BridgeTokens, RoomStatus, bridge_summary, clean_event,
-                         public_token)
+from room_status import (HOUSEKEEPING_STATUSES, MAX_EVENTS, OUT_OF_ORDER_STATUSES, BridgeTokens, RoomCommands,
+                         RoomStatus, bridge_summary, clean_event, public_token)
 from pm import PMRecords, clean_items, items_from_storage, normalize_rating, quarter_bounds, quarter_of, record_ratings
 
 ALL_ROLES = ("front_desk", "supervisor", "maintenance", "admin")
@@ -283,6 +283,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
     devices = Devices(store.config_dir)
     bridge_tokens = BridgeTokens(store.config_dir)
     room_status = RoomStatus(store.config_dir)
+    room_commands = RoomCommands(store.config_dir)
     app.config.setdefault("APNS_SENDER", APNsSender.from_env())
     if not app.config["APNS_SENDER"]:
         app.logger.warning("iPhone app notifications are off: set APNS_AUTH_KEY, APNS_KEY_ID and APNS_TEAM_ID.")
@@ -1409,13 +1410,72 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         if problem:
             return problem
         rooms = room_status.for_location(location)
-        rows = [{"room": room, **{k: info.get(k) for k in ("occupied", "status", "rs_code", "at", "updated_at")}}
+        changes = room_commands.latest_by_room(location)
+        rows = [{"room": room, **{k: info.get(k) for k in ("occupied", "status", "rs_code", "at", "updated_at")},
+                 "change": public_change(changes.get(room))}
                 for room, info in sorted(rooms.items(), key=lambda item: room_sort_key(item[0]))]
         return jsonify({
             "bridge": bridge_summary(bridge_tokens.for_location(location)),
             "rooms": rows,
             "vacant": [r["room"] for r in rows if r["occupied"] is False],
         })
+
+    # ---- Two-way: room status set in HotelCraft, sent to the PMS by the bridge ----
+
+    def public_change(command: dict | None) -> dict | None:
+        if not command:
+            return None
+        return {k: command.get(k) for k in ("id", "status", "state", "requested_by", "requested_at", "error")}
+
+    @app.post("/api/v1/room-status/<room>")
+    def api_set_room_status(room):
+        """{"status"}: queue a room status change for the PMS. Any role may set dirty/clean/
+        inspected/pickup; out of order/service is maintenance, supervisors and admins."""
+        location, problem = location_for()
+        if problem:
+            return problem
+        status = body().get("status")
+        if status in OUT_OF_ORDER_STATUSES:
+            if session.get("role") not in PM_ROLES:
+                return error("Only maintenance or a supervisor can take a room out of order.", 403)
+        elif status not in HOUSEKEEPING_STATUSES:
+            return error("Unknown room status.", 400)
+        room = str(room or "").strip().upper()
+        known, _ = places_for(location)
+        if known:
+            match = next((r for r in known if r.upper() == room), None)
+            if not match:
+                return error(f"'{room}' isn't a room here.", 400)
+            room = match.upper()
+        elif not room or len(room) > MAX_ROOM_LENGTH or not all(c.isalnum() or c == "-" for c in room):
+            return error(f"'{room}' isn't a valid room number.", 400)
+        if not bridge_tokens.for_location(location):
+            return error("No PMS bridge is set up for this property, so status can't be sent to the PMS.", 409)
+        command = room_commands.request(location, room, status, session["user"])
+        return jsonify({"room": room, "change": public_change(command)}), 202
+
+    @app.get("/api/v1/bridge/commands")
+    def api_bridge_commands():
+        """The bridge asks for status changes waiting to go to the PMS."""
+        record, problem = bridge_auth()
+        if problem:
+            return problem
+        return jsonify({"commands": room_commands.pending(record["location"])})
+
+    @app.post("/api/v1/bridge/commands/ack")
+    def api_bridge_commands_ack():
+        """{"results": [{id, ok, rs_code?, error?, retry?}]}. Accepted changes update room status."""
+        record, problem = bridge_auth()
+        if problem:
+            return problem
+        results = body().get("results")
+        if not isinstance(results, list) or len(results) > MAX_EVENTS:
+            return error("results must be a list.", 400)
+        sent = room_commands.ack(record["location"], results)
+        if sent:
+            room_status.apply(record["location"], [
+                {"room": c["room"], "status": c["status"], "rs_code": c["rs_code"], "source": "HC"} for c in sent])
+        return jsonify({"sent": len(sent)})
 
     @app.get("/api/v1/bridge/tokens")
     def api_bridge_tokens():
