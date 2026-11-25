@@ -20,7 +20,7 @@ SCOPE = "https://www.googleapis.com/auth/firebase.messaging"
 TOKEN_LIFETIME = 50 * 60  # Google access tokens last an hour.
 # FCM error codes meaning the registration token will never work again.
 DEAD_TOKEN_ERRORS = {"UNREGISTERED", "INVALID_ARGUMENT"}
-ANDROID_CHANNEL = "new_jobs"  # must match the channel the app creates
+ANDROID_CHANNEL = "jobs_v2"  # must match the channel the app creates (Push.CHANNEL_JOBS)
 
 
 class FCMSender:

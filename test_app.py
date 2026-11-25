@@ -711,7 +711,7 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertEqual(apns.sent, ["ab12"])
             message = fcm.sent[0][1]
             self.assertEqual(message["notification"]["title"], "New job · Room 214")
-            self.assertEqual(message["android"]["notification"]["channel_id"], "new_jobs")
+            self.assertEqual(message["android"]["notification"]["channel_id"], "jobs_v2")
             self.assertEqual(message["data"]["room"], "214")
             tokens = [d["token"] for d in Devices(config_path).load()]
             self.assertNotIn("gone:Token", tokens)
