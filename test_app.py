@@ -711,7 +711,7 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertEqual(apns.sent, ["ab12"])
             message = fcm.sent[0][1]
             self.assertEqual(message["notification"]["title"], "New job · Room 214")
-            self.assertEqual(message["android"]["notification"]["channel_id"], "new_jobs")
+            self.assertEqual(message["android"]["notification"]["channel_id"], "jobs_v2")
             self.assertEqual(message["data"]["room"], "214")
             tokens = [d["token"] for d in Devices(config_path).load()]
             self.assertNotIn("gone:Token", tokens)
@@ -820,6 +820,128 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertEqual(len(log), 3)  # header + real alert + drill
             self.assertIn("False alarm", log[1])
             self.assertIn("frontdesk", log[1])
+
+    def test_enrolled_kiosk_phone_raises_sos_with_nobody_signed_in(self):
+        class FakeFCM:
+            def __init__(self):
+                self.sent = []
+
+            def send(self, client, token, message):
+                self.sent.append((token, message))
+                return 200, ""
+
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            fcm = FakeFCM()
+            app.config.update(FCM_SENDER=fcm, APNS_SENDER=None, APNS_SYNC=True)
+            self.use_known_passwords(app)
+            from apns import Devices
+            Devices(config_path).register("sv:1", "boss", "supervisor", "Elsewhere", False, "android")
+
+            sup = app.test_client()
+            self.login(sup, "supervisor")
+            desk = app.test_client()
+            self.login(desk, "frontdesk")
+
+            # Only supervisors make enrollment codes; the code is shown once and stored hashed.
+            self.assertEqual(desk.post("/api/v1/kiosk/codes", json={}).status_code, 403)
+            made = sup.post("/api/v1/kiosk/codes", json={"label": "XP8 batch"})
+            self.assertEqual(made.status_code, 201)
+            code = made.get_json()["code"]
+            self.assertTrue(code.startswith("hce_"))
+            self.assertNotIn(code, open(os.path.join(config_path, "kiosk_devices.json")).read())
+            self.assertNotIn("code", sup.get("/api/v1/kiosk/devices").get_json()["codes"][0])
+
+            # A phone in setup trades the code for its own key (no session).
+            phone = app.test_client()
+            self.assertEqual(phone.post("/api/v1/kiosk/enroll", json={"code": "hce_wrong"}).status_code, 403)
+            enrolled = phone.post("/api/v1/kiosk/enroll", json={"code": code, "name": "Housekeeping 2", "serial": "XP8-1234"}).get_json()
+            key = enrolled["device_key"]
+            self.assertEqual((enrolled["name"], enrolled["location"]), ("Housekeeping 2", "HCK"))
+            auth = {"Authorization": f"Bearer {key}"}
+            self.assertEqual(phone.get("/api/v1/kiosk/device", headers=auth).get_json()["name"], "Housekeeping 2")
+
+            # With nobody signed in: no key, no alert; with the key, an alert named for the phone.
+            self.assertEqual(phone.post("/api/v1/emergency", json={}).status_code, 401)
+            self.assertEqual(phone.post("/api/v1/emergency", json={}, headers={"Authorization": "Bearer hck_nope"}).status_code, 401)
+            raised = phone.post("/api/v1/emergency", json={"near": "Room 214"}, headers=auth)
+            self.assertEqual(raised.status_code, 201)
+            alert = raised.get_json()
+            self.assertEqual(alert["raised_by"], "Housekeeping 2")
+            self.assertEqual([t for t, _ in fcm.sent], ["sv:1"])
+            self.assertEqual(fcm.sent[0][1]["data"]["raised_by"], "Housekeeping 2")
+            # The key can't do anything else.
+            self.assertEqual(phone.get("/api/v1/issues", headers=auth).status_code, 401)
+            self.assertEqual(phone.get("/api/v1/beacons/map", headers=auth).status_code, 200)
+
+            # Only a supervisor can resolve it; the log names the phone.
+            self.assertEqual(desk.post(f"/api/v1/emergency/{alert['id']}/resolve").status_code, 403)
+            self.assertEqual(sup.post(f"/api/v1/emergency/{alert['id']}/resolve").status_code, 200)
+            log = sup.get("/api/v1/emergency/log.csv").get_data(as_text=True).splitlines()
+            self.assertTrue(log[0].endswith(",device"))
+            self.assertTrue(log[1].endswith(",Housekeeping 2"))
+
+            # A signed-in worker's alert is theirs, with the phone noted.
+            tech = app.test_client()
+            self.login(tech, "maintenance")
+            mine = tech.post("/api/v1/emergency", json={"trigger": "test"}, headers=auth).get_json()
+            self.assertEqual(mine["raised_by"], "maintenance")
+
+            # Supervisor signed in on a USB-set-up phone enrolls it directly.
+            self.assertEqual(desk.post("/api/v1/kiosk/devices", json={"name": "Desk"}).status_code, 403)
+            self.assertEqual(sup.post("/api/v1/kiosk/devices", json={}).status_code, 400)
+            direct = sup.post("/api/v1/kiosk/devices", json={"name": "Engineering 1"}).get_json()
+            self.assertTrue(direct["device_key"].startswith("hck_"))
+            listing = sup.get("/api/v1/kiosk/devices").get_json()
+            self.assertEqual([d["name"] for d in listing["devices"]], ["Housekeeping 2", "Engineering 1"])
+            self.assertIsNotNone(listing["devices"][0]["last_seen_at"])
+            self.assertNotIn("key_hash", listing["devices"][0])
+
+            # Revoking a lost phone stops its key; revoking a code stops new enrollments.
+            device_id = enrolled["device_id"]
+            self.assertTrue(sup.patch(f"/api/v1/kiosk/devices/{device_id}", json={"revoked": True}).get_json()["revoked_at"])
+            self.assertEqual(phone.post("/api/v1/emergency", json={}, headers=auth).status_code, 401)
+            code_id = made.get_json()["id"]
+            self.assertEqual(sup.delete(f"/api/v1/kiosk/codes/{code_id}").status_code, 200)
+            self.assertEqual(phone.post("/api/v1/kiosk/enroll", json={"code": code}).status_code, 403)
+
+    def test_kiosk_phone_identifiers_are_for_supervisors_and_admins_only(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            sup = app.test_client()
+            self.login(sup, "supervisor")
+            code = sup.post("/api/v1/kiosk/codes", json={}).get_json()["code"]
+            phone = app.test_client()
+            info = {"imei": "35-209900-176148-1", "iccid": "", "serial": "XP8-1234", "model": "XP8800",
+                    "android": "8.1.0", "app_version": "1.0 (7)", "battery": 87}
+            key = phone.post("/api/v1/kiosk/enroll", json={"code": code, "name": "Engineering 1", "info": info}
+                             ).get_json()["device_key"]
+            auth = {"Authorization": f"Bearer {key}"}
+
+            device = sup.get("/api/v1/kiosk/devices").get_json()["devices"][0]
+            self.assertEqual((device["imei"], device["iccid"], device["serial"]), ("352099001761481", None, "XP8-1234"))
+            self.assertEqual((device["android"], device["app_version"], device["battery"]), ("8.1.0", "1.0 (7)", 87))
+
+            # The SIM gets activated later: the next check-in fills in the ICCID and keeps the rest.
+            self.assertEqual(phone.post("/api/v1/kiosk/checkin", json={"info": {"iccid": "8901410321111851072F",
+                                                                                "battery": 140}}).status_code, 401)
+            self.assertEqual(phone.post("/api/v1/kiosk/checkin", headers=auth, json={"info": {
+                "iccid": "8901410321111851072F", "battery": 140, "imei": "not a number"}}).status_code, 200)
+            device = sup.get("/api/v1/kiosk/devices").get_json()["devices"][0]
+            self.assertEqual((device["iccid"], device["imei"], device["battery"]), ("8901410321111851072F", "352099001761481", 87))
+            self.assertIsNotNone(device["checked_in_at"])
+
+            # Nobody else sees them: other roles can't list phones, and the phone's own view leaves them out.
+            for role in ("maintenance", "frontdesk"):
+                other = app.test_client()
+                self.login(other, role)
+                self.assertEqual(other.get("/api/v1/kiosk/devices").status_code, 403)
+            mine = phone.get("/api/v1/kiosk/device", headers=auth).get_json()
+            self.assertFalse({"imei", "iccid", "serial"} & mine.keys())
+            page = sup.get("/supervisor").get_data(as_text=True)
+            self.assertIn("352099001761481", page)
+            self.assertIn("8901410321111851072F", page)
 
     def test_room_beacons_need_beacon_access_and_report_status(self):
         with tempfile.TemporaryDirectory() as config_path:

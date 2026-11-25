@@ -1216,7 +1216,8 @@ def create_app() -> Flask:
         issues = _issues_for_location(location)
         rooms, areas = app.extensions["places_for"](location)
         return render_template("supervisor.html", users=users, location=location, issues=issues,
-                               rooms=rooms, areas=areas, room_type_lines=app.extensions["room_type_lines"](location))
+                               rooms=rooms, areas=areas, room_type_lines=app.extensions["room_type_lines"](location),
+                               kiosk_phones=app.extensions["kiosk_devices"].devices(location))
 
     @app.get("/supervisor/report.csv")
     def supervisor_report_csv():
