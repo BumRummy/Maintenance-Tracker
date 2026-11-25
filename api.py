@@ -26,7 +26,7 @@ from flask import Flask, jsonify, request, session
 from apns import DEAD_TOKEN_REASONS, APNsSender, Devices, new_issue_payload
 from fcm import DEAD_TOKEN_ERRORS, FCMSender, new_issue_message
 from beacons import MAX_SIGHTINGS, Beacons, beacon_status, clean_id as clean_beacon_id
-from kiosk_devices import KioskDevices, clean_info, clean_name, public_code, public_device
+from kiosk_devices import KioskDevices, admin_device, clean_info, clean_name, clean_phone_info, public_code, public_device
 from emergency import TRIGGERS, MAX_NEAR, Emergencies, apns_payload as emergency_apns, fcm_message as emergency_fcm
 from pm import PMRecords, clean_items, items_from_storage, normalize_rating, quarter_bounds, quarter_of, record_ratings
 
@@ -1633,6 +1633,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             app.logger.warning("Kiosk enrollment refused (bad or revoked code)")
             return error("That enrollment code isn't valid.", 403)
         device, key = result
+        kiosk.check_in(device["id"], clean_phone_info(data.get("info")))
         app.logger.info("Kiosk phone %s enrolled at %s", device["id"], device["location"])
         return jsonify(enrolled(device, key)), 201
 
@@ -1648,6 +1649,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
             return error("Give the phone a name, for example 'Housekeeping 2'.", 400)
         device, key = kiosk.enroll_direct(location, name, session["user"],
                                           clean_info(data.get("serial")), clean_info(data.get("model")))
+        kiosk.check_in(device["id"], clean_phone_info(data.get("info")))
         return jsonify(enrolled(device, key)), 201
 
     @app.get("/api/v1/kiosk/devices")
@@ -1656,7 +1658,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         location, problem = location_for(roles=PROPERTY_ROLES)
         if problem:
             return problem
-        return jsonify({"devices": [public_device(d) for d in kiosk.devices(location)],
+        return jsonify({"devices": [admin_device(d) for d in kiosk.devices(location)],
                         "codes": [public_code(c) for c in kiosk.codes(location)]})
 
     @app.patch("/api/v1/kiosk/devices/<device_id>")
@@ -1669,7 +1671,7 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         device = kiosk.update(location, device_id, clean_name(data.get("name")), revoke=data.get("revoked") is True)
         if device is None:
             return error("Phone not found.", 404)
-        return jsonify(public_device(device))
+        return jsonify(admin_device(device))
 
     @app.get("/api/v1/kiosk/device")
     def api_kiosk_whoami():
@@ -1678,6 +1680,16 @@ def register_api(app: Flask, store, h: SimpleNamespace) -> None:
         if device is None:
             return error("This phone isn't enrolled, or its key was revoked.", 401)
         return jsonify(public_device(device) | {"location": device["location"]})
+
+    @app.post("/api/v1/kiosk/checkin")
+    def api_kiosk_checkin():
+        """The enrolled phone, every few minutes: {"info": {imei?, iccid?, serial?, model?, android?,
+        app_version?, battery?}}. Only supervisors and admins can read the identifiers back."""
+        device = request_device()
+        if device is None:
+            return error("This phone isn't enrolled, or its key was revoked.", 401)
+        kiosk.check_in(device["id"], clean_phone_info(body().get("info")))
+        return jsonify({"ok": True})
 
     @app.post("/api/v1/kiosk/codes")
     def api_kiosk_create_code():

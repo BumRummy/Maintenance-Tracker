@@ -80,6 +80,6 @@ docker compose up --build
   once) that goes in the zero-touch/QR setup; the phone trades it for a device key
   (`POST /kiosk/enroll`). A supervisor signed in on a phone can also enroll it directly
   (`POST /kiosk/devices`). A device key can only raise an alert (named for the phone) and read the
-  beacon map. `GET /kiosk/devices` lists enrolled phones (the property's panic-button device record);
+  beacon map. Each phone reports its IMEI, SIM ICCID, serial number, model, Android and app version and battery at enrollment and on `POST /kiosk/checkin` (device key); those identifiers are shown to supervisors and admins only (`GET /kiosk/devices` and the Supervisor Settings page). `GET /kiosk/devices` lists enrolled phones (the property's panic-button device record);
   `PATCH` renames or revokes a lost one; `DELETE /kiosk/codes/<id>` stops new enrollments.
   Keys and codes are stored hashed in `${CONFIG_PATH}/kiosk_devices.json`.

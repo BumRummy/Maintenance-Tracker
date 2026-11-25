@@ -94,4 +94,30 @@
     </table>
   </div>
 </section>
+
+<section class="card">
+  <h2>Kiosk Phones at {{ location }}</h2>
+  <p class="muted">Shared work phones enrolled for the panic button. Identifiers are shown to supervisors and admins only.</p>
+  <div class="table-scroll">
+    <table class="user-table">
+      <thead><tr><th>Name</th><th>IMEI</th><th>SIM ICCID</th><th>Serial</th><th>Model / Android</th><th>App</th><th>Battery</th><th>Last check-in</th></tr></thead>
+      <tbody>
+        {% for d in kiosk_phones %}
+        <tr>
+          <td><strong>{{ d.name }}</strong>{% if d.revoked_at %} <span class="role-pill">Revoked</span>{% endif %}</td>
+          <td><code>{{ d.imei or '—' }}</code></td>
+          <td><code>{{ d.iccid or 'No SIM' }}</code></td>
+          <td><code>{{ d.serial or '—' }}</code></td>
+          <td>{{ d.model or '—' }}{% if d.android %} · Android {{ d.android }}{% endif %}</td>
+          <td>{{ d.app_version or '—' }}</td>
+          <td>{% if d.battery is not none %}{{ d.battery }}%{% else %}—{% endif %}</td>
+          <td>{{ (d.checked_in_at or d.last_seen_at or '—')[:16] | replace('T', ' ') }}{% if d.checked_in_at or d.last_seen_at %} UTC{% endif %}</td>
+        </tr>
+        {% else %}
+        <tr><td colspan="8">No phones enrolled yet. Enroll one from the phone: menu → Kiosk phones.</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
 {% endblock %}

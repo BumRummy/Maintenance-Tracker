@@ -905,6 +905,44 @@ class MaintenanceIssueTests(unittest.TestCase):
             self.assertEqual(sup.delete(f"/api/v1/kiosk/codes/{code_id}").status_code, 200)
             self.assertEqual(phone.post("/api/v1/kiosk/enroll", json={"code": code}).status_code, 403)
 
+    def test_kiosk_phone_identifiers_are_for_supervisors_and_admins_only(self):
+        with tempfile.TemporaryDirectory() as config_path:
+            app = self.make_app(config_path)
+            self.use_known_passwords(app)
+            sup = app.test_client()
+            self.login(sup, "supervisor")
+            code = sup.post("/api/v1/kiosk/codes", json={}).get_json()["code"]
+            phone = app.test_client()
+            info = {"imei": "35-209900-176148-1", "iccid": "", "serial": "XP8-1234", "model": "XP8800",
+                    "android": "8.1.0", "app_version": "1.0 (7)", "battery": 87}
+            key = phone.post("/api/v1/kiosk/enroll", json={"code": code, "name": "Engineering 1", "info": info}
+                             ).get_json()["device_key"]
+            auth = {"Authorization": f"Bearer {key}"}
+
+            device = sup.get("/api/v1/kiosk/devices").get_json()["devices"][0]
+            self.assertEqual((device["imei"], device["iccid"], device["serial"]), ("352099001761481", None, "XP8-1234"))
+            self.assertEqual((device["android"], device["app_version"], device["battery"]), ("8.1.0", "1.0 (7)", 87))
+
+            # The SIM gets activated later: the next check-in fills in the ICCID and keeps the rest.
+            self.assertEqual(phone.post("/api/v1/kiosk/checkin", json={"info": {"iccid": "8901410321111851072F",
+                                                                                "battery": 140}}).status_code, 401)
+            self.assertEqual(phone.post("/api/v1/kiosk/checkin", headers=auth, json={"info": {
+                "iccid": "8901410321111851072F", "battery": 140, "imei": "not a number"}}).status_code, 200)
+            device = sup.get("/api/v1/kiosk/devices").get_json()["devices"][0]
+            self.assertEqual((device["iccid"], device["imei"], device["battery"]), ("8901410321111851072F", "352099001761481", 87))
+            self.assertIsNotNone(device["checked_in_at"])
+
+            # Nobody else sees them: other roles can't list phones, and the phone's own view leaves them out.
+            for role in ("maintenance", "frontdesk"):
+                other = app.test_client()
+                self.login(other, role)
+                self.assertEqual(other.get("/api/v1/kiosk/devices").status_code, 403)
+            mine = phone.get("/api/v1/kiosk/device", headers=auth).get_json()
+            self.assertFalse({"imei", "iccid", "serial"} & mine.keys())
+            page = sup.get("/supervisor").get_data(as_text=True)
+            self.assertIn("352099001761481", page)
+            self.assertIn("8901410321111851072F", page)
+
     def test_room_beacons_need_beacon_access_and_report_status(self):
         with tempfile.TemporaryDirectory() as config_path:
             app = self.make_app(config_path)

@@ -6,7 +6,9 @@ How a phone gets its key:
     the setup configuration, and the phone trades it for a device key during first boot.
   - USB setup: a supervisor signs in on the phone and taps "Enroll this phone".
 
-A device key can only raise an emergency alert and read the room-beacon map. Keys and codes are
+A device key can only raise an emergency alert, read the room-beacon map and check in (its
+identifiers, battery and app version). IMEI, ICCID and serial number are shown to supervisors and
+admins only. Keys and codes are
 stored as SHA-256 hashes; the plain value is shown once. The device list doubles as the panic
 button record a property keeps (which phones, enrolled when, last heard from).
 
@@ -40,6 +42,33 @@ def _hash(secret: str) -> str:
 def clean_name(raw) -> str | None:
     name = " ".join(str(raw or "").split())[:MAX_NAME]
     return name or None
+
+
+IDENTIFIER_FIELDS = ("imei", "iccid", "serial")
+INFO_FIELDS = ("model", "android", "app_version")
+
+
+def clean_digits(raw, longest: int) -> str | None:
+    """IMEI (15-16 digits) or ICCID (19-20 digits, may end in F): digits/hex only, no spaces."""
+    value = "".join(c for c in str(raw or "").upper() if c.isalnum())
+    return value[:longest] if value and all(c in "0123456789ABCDEF" for c in value) else None
+
+
+def clean_phone_info(raw) -> dict:
+    """What a phone reports about itself. Unknown keys are ignored; bad values become None."""
+    raw = raw if isinstance(raw, dict) else {}
+    info = {
+        "imei": clean_digits(raw.get("imei"), 17),
+        "iccid": clean_digits(raw.get("iccid"), 22),
+        "serial": clean_info(raw.get("serial")),
+        "model": clean_info(raw.get("model")),
+        "android": clean_info(raw.get("android")),
+        "app_version": clean_info(raw.get("app_version")),
+    }
+    battery = raw.get("battery")
+    if isinstance(battery, int) and not isinstance(battery, bool) and 0 <= battery <= 100:
+        info["battery"] = battery
+    return info
 
 
 def clean_info(raw) -> str | None:
@@ -149,6 +178,21 @@ class KioskDevices:
         return sorted((d for d in self.load()["devices"].values() if d["location"] == location),
                       key=lambda d: d["enrolled_at"])
 
+    def check_in(self, device_id: str, info: dict) -> dict | None:
+        """The phone reports its identifiers, battery and versions (at enrollment and every few minutes).
+        A value the phone can't read this time (no SIM yet, say) doesn't erase the one we had."""
+        with self.lock:
+            data = self.load()
+            device = data["devices"].get(device_id)
+            if not device or device["revoked_at"]:
+                return None
+            for key, value in info.items():
+                if value is not None:
+                    device[key] = value
+            device["checked_in_at"] = device["last_seen_at"] = _now().isoformat()
+            self._save(data)
+            return device
+
     def update(self, location: str, device_id: str, name: str | None = None, revoke: bool = False) -> dict | None:
         with self.lock:
             data = self.load()
@@ -164,8 +208,15 @@ class KioskDevices:
 
 
 def public_device(device: dict) -> dict:
-    return {k: device.get(k) for k in ("id", "name", "serial", "model", "enrolled_at", "enrolled_via",
+    """Safe for the phone itself and anyone at the property: no hardware identifiers."""
+    return {k: device.get(k) for k in ("id", "name", "model", "enrolled_at", "enrolled_via",
                                        "enrolled_by", "last_seen_at", "revoked_at")}
+
+
+def admin_device(device: dict) -> dict:
+    """Supervisors and admins: the device record including IMEI, ICCID and serial number."""
+    return public_device(device) | {k: device.get(k) for k in
+                                    IDENTIFIER_FIELDS + ("android", "app_version", "battery", "checked_in_at")}
 
 
 def public_code(code: dict) -> dict:
